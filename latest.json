@@ -1,6 +1,6 @@
 {
-  "version": "1.9.9",
+  "version": "2.0.0",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-22T14:08:00-07:00",
-  "notes": "Fixed assistant startup after installing the online updater"
+  "releasedAt": "2026-07-22T15:00:00-07:00",
+  "notes": "Added deal calculator with recommended buy price, auction fees, expenses, and profit estimates"
 }

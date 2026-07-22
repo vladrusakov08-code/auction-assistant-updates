@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      1.9.9
+// @version      2.0.0
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3024,7 +3024,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '1.9.9';
+  const SCRIPT_VERSION = '2.0.0';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3039,6 +3039,7 @@
   const JOB_KEY = 'oveKbbActiveJob';
   const CARFAX_JOB_KEY = 'oveCarfaxActiveJob';
   const ASSISTANT_UI_KEY = 'oveAuctionAssistantUi';
+  const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
   const DEFAULTS = { zip: '90001' };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -3365,6 +3366,26 @@
       #ove-kbb-panel .carfax-icon svg{display:block;width:25px;height:25px}#ove-kbb-panel .carfax-metric .value{font-size:15px}
       #ove-kbb-panel .carfax-retail .value{color:#187339;font-size:18px}
       #ove-kbb-panel .carfax-status{padding:0 13px 11px;text-align:center;font-size:12px;color:#8da0bc}
+      #ove-kbb-panel .deal-card{padding:0;overflow:hidden}
+      #ove-kbb-panel .deal-card summary{display:flex;align-items:center;justify-content:space-between;padding:12px 13px;
+        cursor:pointer;list-style:none;font-weight:800;background:linear-gradient(180deg,#fff,#f7f9fc)}
+      #ove-kbb-panel .deal-card summary::-webkit-details-marker{display:none}
+      #ove-kbb-panel .deal-card summary span:last-child{color:#2864eb;font-size:12px}
+      #ove-kbb-panel .deal-body{padding:0 13px 13px;border-top:1px solid #e5e9ef}
+      #ove-kbb-panel .deal-note{font-size:11px;color:#8da0bc;margin:10px 0 8px}
+      #ove-kbb-panel .deal-three{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+      #ove-kbb-panel .deal-stat{padding:8px 4px;border:1px solid #e1e5eb;border-radius:8px;text-align:center}
+      #ove-kbb-panel .deal-stat .value{font-size:14px}
+      #ove-kbb-panel .deal-inputs{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+      #ove-kbb-panel .deal-field label{display:block;margin:0 0 4px;font-size:10px;color:#68707c;text-transform:uppercase;letter-spacing:.04em}
+      #ove-kbb-panel .deal-field .input-wrap{display:flex;align-items:center;height:37px;border:1px solid #ccd4df;border-radius:8px;background:#fff;overflow:hidden}
+      #ove-kbb-panel .deal-field .input-wrap span{padding-left:9px;color:#7a8492;font-weight:700}
+      #ove-kbb-panel .deal-field input{width:100%;height:35px;padding:0 8px;border:0;outline:0;background:transparent;color:#30343b;font:750 14px system-ui}
+      #ove-kbb-panel .deal-recommended{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:10px 12px;
+        border-radius:9px;background:#eaf1ff;color:#174d9b}
+      #ove-kbb-panel .deal-recommended .value{font-size:20px;color:#174d9b}
+      #ove-kbb-panel .deal-profit{margin-top:9px}.deal-profit .deal-stat .value{color:#187339}
+      #ove-kbb-panel .deal-profit .deal-stat.negative .value{color:#bd2c2c}
       #ove-kbb-panel .miles .value{font-size:18px}#ove-kbb-panel button{border:0;border-radius:9px;cursor:pointer;font-weight:750}
       #ove-kbb-run{width:100%;padding:11px;margin-top:11px;background:#2864eb;color:#fff;font-size:15px}
       #ove-kbb-settings{background:transparent;color:#556070;padding:3px 6px}
@@ -3499,6 +3520,74 @@
     const people = positions.map(x => `<circle cx="${x}" cy="10" r="3.4"/><path d="M${x - 5} 24c.4-6 2.1-9 5-9s4.6 3 5 9Z"/>`).join('');
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
+  function readDealSettings(vin) {
+    const global = GM_getValue(DEAL_SETTINGS_KEY, {}) || {};
+    const vehicle = GM_getValue(`${DEAL_SETTINGS_KEY}:${vin}`, {}) || {};
+    return {
+      feePercent: Number(global.feePercent ?? 6),
+      targetProfit: Number(global.targetProfit ?? 2000),
+      delivery: Number(vehicle.delivery ?? 0),
+      extra: Number(vehicle.extra ?? 0),
+      purchasePrice: Number(vehicle.purchasePrice ?? 0),
+    };
+  }
+  function calculateDeal(values, carfax, config) {
+    const sources = [values?.fair?.value, values?.good?.value, carfax?.retailValue].map(Number);
+    if (sources.some((value) => !Number.isFinite(value) || value <= 0)) return null;
+    const saleMax = sources.reduce((sum, value) => sum + value, 0) / sources.length;
+    const saleMin = saleMax * 0.9;
+    const saleAverage = (saleMax + saleMin) / 2;
+    const priceWithProfitGap = saleMin - config.targetProfit;
+    const fee = priceWithProfitGap * (config.feePercent / 100);
+    const recommendedBuy = priceWithProfitGap - fee - config.delivery - config.extra;
+    const purchase = config.purchasePrice;
+    const profitMax = purchase > 0 ? saleMax - fee - config.delivery - config.extra - purchase : null;
+    const profitMin = purchase > 0 ? saleMin - fee - config.delivery - config.extra - purchase : null;
+    return {
+      saleMax, saleAverage, saleMin, fee, recommendedBuy,
+      profitMax, profitAverage: purchase > 0 ? (profitMax + profitMin) / 2 : null, profitMin,
+    };
+  }
+  function dealStat(label, value, className = '') {
+    const negative = Number.isFinite(value) && value < 0 ? ' negative' : '';
+    return `<div class="deal-stat ${className}${negative}"><div class="label">${label}</div><div class="value">${money(value)}</div></div>`;
+  }
+  function dealMarkup(vin, values, carfax) {
+    const config = readDealSettings(vin);
+    const deal = calculateDeal(values, carfax, config);
+    return `<details class="card deal-card" open><summary><span>Deal Calculator</span><span>Profit & purchase ▾</span></summary>
+      <div class="deal-body">
+        <div class="deal-note">Sale estimate from KBB Fair, KBB Good and CARFAX Retail</div>
+        <div class="deal-three">${dealStat('Max sale', deal?.saleMax)}${dealStat('Average', deal?.saleAverage)}${dealStat('Min sale', deal?.saleMin)}</div>
+        <div class="deal-inputs">
+          <div class="deal-field"><label>Minimum profit</label><div class="input-wrap"><span>$</span><input data-deal="targetProfit" inputmode="numeric" value="${config.targetProfit || ''}"></div></div>
+          <div class="deal-field"><label>Auction fee</label><div class="input-wrap"><input data-deal="feePercent" inputmode="decimal" value="${config.feePercent}"><span style="padding:0 9px 0 0">%</span></div></div>
+          <div class="deal-field"><label>Delivery</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="0"></div></div>
+          <div class="deal-field"><label>Additional costs</label><div class="input-wrap"><span>$</span><input data-deal="extra" inputmode="numeric" value="${config.extra || ''}" placeholder="0"></div></div>
+        </div>
+        <div class="deal-recommended"><div><div class="label">Recommended max buy</div><div style="font-size:10px;opacity:.8">Includes profit, fee and costs</div></div><div class="value">${money(deal?.recommendedBuy)}</div></div>
+        <div class="deal-field" style="margin-top:10px"><label>Your purchase price</label><div class="input-wrap"><span>$</span><input data-deal="purchasePrice" inputmode="numeric" value="${config.purchasePrice || ''}" placeholder="Enter price"></div></div>
+        <div class="deal-three deal-profit">${dealStat('Max profit', deal?.profitMax)}${dealStat('Average', deal?.profitAverage)}${dealStat('Min profit', deal?.profitMin)}</div>
+        ${deal ? `<div class="deal-note">Calculated fee: ${money(deal.fee)}</div>` : '<div class="deal-note">Waiting for KBB Fair, KBB Good and CARFAX Retail values.</div>'}
+      </div></details>`;
+  }
+  function bindDealInputs(vin) {
+    document.querySelectorAll('#ove-kbb-content [data-deal]').forEach((input) => {
+      input.onchange = () => {
+        const field = input.dataset.deal;
+        const value = Number(String(input.value || '').replace(/[^\d.]/g, '')) || 0;
+        if (field === 'feePercent' || field === 'targetProfit') {
+          const global = GM_getValue(DEAL_SETTINGS_KEY, {}) || {};
+          GM_setValue(DEAL_SETTINGS_KEY, { ...global, [field]: value });
+        } else {
+          const key = `${DEAL_SETTINGS_KEY}:${vin}`;
+          const vehicle = GM_getValue(key, {}) || {};
+          GM_setValue(key, { ...vehicle, [field]: value });
+        }
+        render();
+      };
+    });
+  }
   function render(message = '') {
     makePanel();
     const vehicle = readVehicle(); const config = settings();
@@ -3550,11 +3639,13 @@
         </div>
         ${!carfax ? `<div class="carfax-status">${carfaxJob?.vin === vehicle.vin ? (carfaxJob.stage || 'Report pending') : 'Report pending'}</div>` : ''}
       </div>
+      ${dealMarkup(vehicle.vin, values, carfax)}
       <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Get KBB + CARFAX'}</button>
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
         `Color: ${vehicle.color} · ZIP: ${config.zip}`)}</div>`;
     document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run(); };
+    bindDealInputs(vehicle.vin);
   }
   function carfaxRequest(method, url, data) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
