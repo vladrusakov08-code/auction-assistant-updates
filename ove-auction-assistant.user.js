@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      1.9.8
+// @version      1.9.9
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -33,15 +33,6 @@
 
     const MARKER_HOST = location.hostname.toLowerCase();
     if (!MARKER_HOST.includes('ove.com') && !MARKER_HOST.includes('manheim.com') && !MARKER_HOST.includes('copart.com')) return;
-
-    const SCRIPT_VERSION = '1.9.8';
-    const UPDATE_MANIFEST_URL =
-        'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
-    const UPDATE_SCRIPT_URL =
-        'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js';
-    const UPDATE_CHECK_STORAGE = 'auction_assistant_update_check_v1';
-    let availableUpdate = null;
-    let updateCheckStarted = false;
 
     /* ========================================
        FIREBASE CONFIGURATION
@@ -3033,6 +3024,14 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
+  const SCRIPT_VERSION = '1.9.9';
+  const UPDATE_MANIFEST_URL =
+    'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
+  const UPDATE_SCRIPT_URL =
+    'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js';
+  const UPDATE_CHECK_STORAGE = 'auction_assistant_update_check_v1';
+  let availableUpdate = null;
+  let updateCheckStarted = false;
   const IS_SUPPORTED_AUCTION = HOST.includes('ove.com') || HOST.includes('manheim.com') || HOST.includes('copart.com');
   const AUCTION_SITE = HOST.includes('copart') ? 'COPART' : HOST.includes('manheim') ? 'MANHEIM' : HOST.includes('ove.com') ? 'OVE' : 'VEHICLE';
   const BRIDGE = 'http://127.0.0.1:8765';
