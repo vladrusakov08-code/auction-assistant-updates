@@ -1,0 +1,6 @@
+{
+  "version": "1.9.8",
+  "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
+  "releasedAt": "2026-07-22T13:52:00-07:00",
+  "notes": "Added online update channel and in-panel update notification"
+}
