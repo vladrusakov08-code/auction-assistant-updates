@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.0.0
+// @version      2.1.0
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3024,7 +3024,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.0.0';
+  const SCRIPT_VERSION = '2.1.0';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3040,10 +3040,96 @@
   const CARFAX_JOB_KEY = 'oveCarfaxActiveJob';
   const ASSISTANT_UI_KEY = 'oveAuctionAssistantUi';
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
+  const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
+  const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
+  const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
+  const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
   const DEFAULTS = { zip: '90001' };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let lastRun = 0;
+  const kbbJobKey = (vin) => `${JOB_KEY}:${vin}`;
+
+  function queueRequest(method, url, body = null, headers = {}) {
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method, url, timeout: 25000, headers: { ...headers, ...(body ? { 'Content-Type':'application/json' } : {}) },
+      data: body ? JSON.stringify(body) : undefined,
+      onload: (response) => {
+        let payload = {}; try { payload = response.responseText ? JSON.parse(response.responseText) : {}; } catch (_) {}
+        if (response.status >= 200 && response.status < 300) return resolve(payload);
+        const error = new Error(payload?.error?.message || `Queue HTTP ${response.status}`);
+        error.status = response.status; reject(error);
+      },
+      onerror: () => reject(new Error('Shared KBB queue network error')),
+      ontimeout: () => reject(new Error('Shared KBB queue timed out')),
+    }));
+  }
+  async function queueToken() {
+    let auth = GM_getValue(KBB_QUEUE_AUTH_KEY, {}) || {};
+    if (auth.idToken && auth.expiresAt > Date.now() + 120000) return auth.idToken;
+    let result;
+    if (auth.refreshToken) {
+      try {
+        result = await new Promise((resolve, reject) => GM_xmlhttpRequest({
+          method:'POST', url:`https://securetoken.googleapis.com/v1/token?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+          timeout:25000, headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+          data:`grant_type=refresh_token&refresh_token=${encodeURIComponent(auth.refreshToken)}`,
+          onload:(response) => { try { const value=JSON.parse(response.responseText||'{}'); response.status<300?resolve(value):reject(new Error(value?.error?.message||'Token refresh failed')); } catch(error){reject(error);} },
+          onerror:() => reject(new Error('Token refresh network error')),
+        }));
+      } catch (_) { result = null; }
+    }
+    if (result?.id_token) auth = { idToken:result.id_token, refreshToken:result.refresh_token || auth.refreshToken,
+      userId:result.user_id || auth.userId, expiresAt:Date.now() + Number(result.expires_in || 3600) * 1000 };
+    else {
+      result = await queueRequest('POST',
+        `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${encodeURIComponent(FIREBASE_API_KEY)}`,
+        { returnSecureToken:true });
+      auth = { idToken:result.idToken, refreshToken:result.refreshToken, userId:result.localId,
+        expiresAt:Date.now() + Number(result.expiresIn || 3600) * 1000 };
+    }
+    GM_setValue(KBB_QUEUE_AUTH_KEY, auth); return auth.idToken;
+  }
+  async function readSharedKbbQueue() {
+    const token = await queueToken();
+    const document = await queueRequest('GET', KBB_QUEUE_DOC, null, { Authorization:`Bearer ${token}` });
+    const raw = document.fields?.[KBB_QUEUE_FIELD]?.stringValue || '';
+    let state = {}; try { state = raw ? JSON.parse(raw) : {}; } catch (_) {}
+    state.pending = Array.isArray(state.pending) ? state.pending : [];
+    state.jobs = state.jobs && typeof state.jobs === 'object' ? state.jobs : {};
+    return { state, updateTime:document.updateTime };
+  }
+  async function writeSharedKbbQueue(state, updateTime) {
+    const token = await queueToken();
+    state.updatedAt = Date.now();
+    const precondition = updateTime ? `&currentDocument.updateTime=${encodeURIComponent(updateTime)}` : '';
+    return queueRequest('PATCH', `${KBB_QUEUE_DOC}?updateMask.fieldPaths=${KBB_QUEUE_FIELD}${precondition}`,
+      { fields:{ [KBB_QUEUE_FIELD]:{ stringValue:JSON.stringify(state) } } }, { Authorization:`Bearer ${token}` });
+  }
+  async function mutateSharedKbbQueue(change, attempts = 8) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      const { state, updateTime } = await readSharedKbbQueue();
+      const value = change(state);
+      try { await writeSharedKbbQueue(state, updateTime); return value; }
+      catch (error) { if (![409,412].includes(error.status) || attempt === attempts - 1) throw error; await sleep(120 + attempt * 80); }
+    }
+  }
+  async function enqueueSharedKbb(vehicle, zip) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
+    await mutateSharedKbbQueue((queue) => {
+      const duplicate = [queue.active?.id, ...queue.pending].map(key => queue.jobs[key])
+        .find(job => job?.vin === vehicle.vin && !job.completedAt);
+      if (duplicate) { duplicate.requestedBy = [...new Set([...(duplicate.requestedBy || []), id])]; return; }
+      queue.jobs[id] = { id, ...vehicle, zip, status:'queued', message:'Waiting in KBB queue',
+        requestedBy:GM_getValue('vin_marker_active_profile_v1', '') || 'user', createdAt:Date.now(), updatedAt:Date.now() };
+      queue.pending.push(id);
+    });
+    // If the VIN was already queued in another tab/user, attach this panel to that job.
+    const { state } = await readSharedKbbQueue();
+    const attached = Object.values(state.jobs).filter(job => job?.vin === vehicle.vin && !job.completedAt)
+      .sort((a,b) => a.createdAt - b.createdAt)[0];
+    return attached?.id || id;
+  }
 
   function carfaxHtmlToText(html = '') {
     const withImageLabels = html.replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, ' $1 ');
@@ -3592,7 +3678,7 @@
     makePanel();
     const vehicle = readVehicle(); const config = settings();
     const result = vehicle.vin ? GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) : null;
-    const job = GM_getValue(JOB_KEY, null);
+    const job = vehicle.vin ? GM_getValue(kbbJobKey(vehicle.vin), null) : null;
     const active = job?.vin === vehicle.vin && !job.completedAt;
     const values = result?.values || {};
     const carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
@@ -3720,26 +3806,35 @@
     const vehicle = readVehicle(); const config = settings();
     if (!vehicle.vin || !vehicle.mileage) { render('Could not read VIN or mileage.'); return; }
     GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, null);
-    GM_setValue(JOB_KEY, { ...vehicle, stage:'Sending to BlueStacks', progress:2, eta:35, startedAt:Date.now() });
+    GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Adding to shared KBB queue', progress:2, startedAt:Date.now() });
     render();
     try {
       startCarfax(vehicle);
-      await bridge('POST', { ...vehicle, zip: config.zip });
-      const deadline = Date.now() + 5 * 60 * 1000;
+      const cloudJobId = await enqueueSharedKbb(vehicle, config.zip);
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage:'Waiting in KBB queue', progress:3, startedAt:Date.now() });
+      const deadline = Date.now() + 12 * 60 * 1000;
       while (Date.now() < deadline) {
-        await sleep(900);
-        const state = await bridge('GET');
+        await sleep(1100);
+        const { state:queue } = await readSharedKbbQueue();
+        const state = queue.jobs?.[cloudJobId];
+        if (!state) throw new Error('KBB queue lost this request');
         savePartial(vehicle, config, state);
         const done = state.status === 'done';
-        GM_setValue(JOB_KEY, { ...vehicle, stage:state.message || state.status, progress:state.progress,
-          eta:state.eta, startedAt:Date.now(), completedAt:done ? Date.now() : null });
+        const position = queue.pending.indexOf(cloudJobId);
+        const stage = state.status === 'queued'
+          ? (queue.active?.id && queue.active.id !== cloudJobId
+              ? `KBB busy · another vehicle in process · queue position ${Math.max(1, position + 1)}`
+              : (position >= 0 ? `In queue · position ${position + 1}` : 'Waiting in KBB queue'))
+          : (state.message || 'KBB in progress on Vlad’s Mac');
+        GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage, progress:state.progress || 3,
+          eta:state.eta, startedAt:state.startedAt || state.createdAt || Date.now(), completedAt:done ? Date.now() : null });
         render();
         if (done) return;
         if (state.status === 'error') throw new Error(state.message || 'KBB failed');
       }
-      throw new Error('Timed out waiting for KBB');
+      throw new Error('Timed out waiting in shared KBB queue');
     } catch (error) {
-      GM_setValue(JOB_KEY, { ...vehicle, completedAt:Date.now(), error:error.message });
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, completedAt:Date.now(), error:error.message });
       render(error.message);
     }
   }

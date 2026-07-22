@@ -1,6 +1,6 @@
 {
-  "version": "2.0.0",
+  "version": "2.1.0",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-22T15:00:00-07:00",
-  "notes": "Added deal calculator with recommended buy price, auction fees, expenses, and profit estimates"
+  "releasedAt": "2026-07-22T16:05:31-07:00",
+  "notes": "Added a shared KBB queue so Vlad and Vadim can submit vehicles through one computer without overlapping checks"
 }
