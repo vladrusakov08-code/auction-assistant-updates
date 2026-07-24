@@ -1,6 +1,6 @@
 {
-  "version": "2.2.2",
+  "version": "2.2.3",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-23T18:40:30-07:00",
-  "notes": "Stable release: Google Sheets saving, KBB Fair and Good, CARFAX, Deal Calculator, VIN Marker, OVE/Manheim/Copart support, quota backoff and local KBB fallback"
+  "releasedAt": "2026-07-23T21:18:44-07:00",
+  "notes": "Prevent duplicate KBB runs by preferring the local bridge, superseding older queued requests and expiring stale fallback jobs"
 }

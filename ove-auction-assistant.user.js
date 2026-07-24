@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.2
+// @version      2.2.3
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3026,7 +3026,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.2';
+  const SCRIPT_VERSION = '2.2.3';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3203,11 +3203,22 @@
   async function enqueueSharedKbb(vehicle, zip) {
     const id = `${Date.now()}-${Math.random().toString(36).slice(2,10)}`;
     await mutateSharedKbbQueue((queue) => {
+      const requestedBy = GM_getValue('vin_marker_active_profile_v1', '') || 'user';
+      const now = Date.now();
+      queue.pending = queue.pending.filter((pendingId) => {
+        const pendingJob = queue.jobs[pendingId];
+        if (!pendingJob || pendingJob.completedAt || pendingJob.requestedBy !== requestedBy) return true;
+        pendingJob.status = 'error';
+        pendingJob.message = 'Replaced by a newer request';
+        pendingJob.completedAt = now;
+        pendingJob.updatedAt = now;
+        return false;
+      });
       const duplicate = [queue.active?.id, ...queue.pending].map(key => queue.jobs[key])
         .find(job => job?.vin === vehicle.vin && !job.completedAt);
-      if (duplicate) { duplicate.requestedBy = [...new Set([...(duplicate.requestedBy || []), id])]; return; }
+      if (duplicate) return;
       queue.jobs[id] = { id, ...vehicle, zip, status:'queued', message:'Waiting in KBB queue',
-        requestedBy:GM_getValue('vin_marker_active_profile_v1', '') || 'user', createdAt:Date.now(), updatedAt:Date.now() };
+        requestedBy, createdAt:now, updatedAt:now };
       queue.pending.push(id);
     });
     // If the VIN was already queued in another tab/user, attach this panel to that job.
@@ -3981,6 +3992,9 @@
   }
   async function runLocalKbb(vehicle, config, reason = '') {
     const startedAt = Date.now();
+    const current = await bridge('GET');
+    if (current.status === 'working' && current.vin && current.vin !== vehicle.vin)
+      throw new Error(`KBB Bridge is busy with VIN ${current.vin}`);
     GM_setValue(kbbJobKey(vehicle.vin), {
       ...vehicle, stage:reason ? 'Cloud quota reached · using local KBB Bridge' : 'Using local KBB Bridge',
       progress:3, startedAt
@@ -4014,6 +4028,13 @@
     render();
     try {
       startCarfax(vehicle);
+      try {
+        await bridge('GET');
+        await runLocalKbb(vehicle, config);
+        return;
+      } catch (localError) {
+        if (!/not running|did not respond|network/i.test(localError.message || '')) throw localError;
+      }
       let cloudJobId;
       try {
         cloudJobId = await enqueueSharedKbb(vehicle, config.zip);
