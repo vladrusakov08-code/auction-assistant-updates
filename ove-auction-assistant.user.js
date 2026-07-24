@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.1.0
+// @version      2.2.2
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -25,6 +25,8 @@
 // @connect      raw.githubusercontent.com
 // @updateURL    https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
+// @connect      script.google.com
+// @connect      script.googleusercontent.com
 // @run-at       document-end
 // ==/UserScript==
 
@@ -3024,7 +3026,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.1.0';
+  const SCRIPT_VERSION = '2.2.2';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3040,7 +3042,11 @@
   const CARFAX_JOB_KEY = 'oveCarfaxActiveJob';
   const ASSISTANT_UI_KEY = 'oveAuctionAssistantUi';
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
+  const SHEET_SAVE_SETTINGS_KEY = 'auctionAssistantSheetSaveSettingsV1';
+  const SHEET_SAVE_WEB_APP_URL =
+    'https://script.google.com/macros/s/AKfycbzx2f63KpLVX9me2jOnlEX3lgp7mWOqq3CkAivoM3_EMOj6ENMrYQcFkoqwedhLBY_-/exec';
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
+  const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
   const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
   const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
@@ -3112,6 +3118,86 @@
       const value = change(state);
       try { await writeSharedKbbQueue(state, updateTime); return value; }
       catch (error) { if (![409,412].includes(error.status) || attempt === attempts - 1) throw error; await sleep(120 + attempt * 80); }
+    }
+  }
+  async function readSharedResults() {
+    const token = await queueToken();
+    const document = await queueRequest('GET', KBB_QUEUE_DOC, null, { Authorization:`Bearer ${token}` });
+    const raw = document.fields?.[SHARED_RESULTS_FIELD]?.stringValue || '';
+    let results = {}; try { results = raw ? JSON.parse(raw) : {}; } catch (_) {}
+    return { results:results && typeof results === 'object' ? results : {}, updateTime:document.updateTime };
+  }
+  async function writeSharedResults(results, updateTime) {
+    const token = await queueToken();
+    const entries = Object.entries(results)
+      .sort((a,b) => Number(b[1]?.updatedAt || 0) - Number(a[1]?.updatedAt || 0))
+      .slice(0, 350);
+    const compact = Object.fromEntries(entries);
+    const precondition = updateTime ? `&currentDocument.updateTime=${encodeURIComponent(updateTime)}` : '';
+    return queueRequest('PATCH', `${KBB_QUEUE_DOC}?updateMask.fieldPaths=${SHARED_RESULTS_FIELD}${precondition}`,
+      { fields:{ [SHARED_RESULTS_FIELD]:{ stringValue:JSON.stringify(compact) } } }, { Authorization:`Bearer ${token}` });
+  }
+  const sharedPublishSignatures = new Map();
+  const sharedPublishInFlight = new Set();
+  async function publishSharedResult(vin, vehicle = {}) {
+    if (!vin) return;
+    const kbb = GM_getValue(`oveKbbPrivateResult:${vin}`, null);
+    const carfax = GM_getValue(`oveCarfaxResult:${vin}`, null);
+    const signature = JSON.stringify({ vehicle, kbb, carfax });
+    if (sharedPublishSignatures.get(vin) === signature || sharedPublishInFlight.has(vin)) return;
+    sharedPublishInFlight.add(vin);
+    try {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          const { results, updateTime } = await readSharedResults();
+          const old = results[vin] || {};
+          results[vin] = {
+            ...old,
+            vehicle:{ ...(old.vehicle || {}), ...vehicle, vin },
+            kbb:kbb || old.kbb || null,
+            carfax:carfax || old.carfax || null,
+            updatedAt:Date.now(),
+          };
+          await writeSharedResults(results, updateTime);
+          sharedPublishSignatures.set(vin, signature);
+          return;
+        } catch (error) {
+          if (![409,412].includes(error.status) || attempt === 5) return;
+          await sleep(100 + attempt * 90);
+        }
+      }
+    } finally {
+      sharedPublishInFlight.delete(vin);
+    }
+  }
+  const hydratedSharedVins = new Set();
+  async function hydrateSharedResult(vehicle, force = false) {
+    if (!vehicle?.vin || (!force && hydratedSharedVins.has(vehicle.vin))) return false;
+    hydratedSharedVins.add(vehicle.vin);
+    try {
+      const { results } = await readSharedResults();
+      const shared = results[vehicle.vin];
+      if (!shared) return false;
+      const localKbb = GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null);
+      const localCarfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
+      if (shared.kbb && (!localKbb || Number(shared.updatedAt) >= Number(localKbb.sharedUpdatedAt || 0)))
+        GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, { ...shared.kbb, sharedUpdatedAt:shared.updatedAt });
+      if (shared.carfax && (!localCarfax || Number(shared.updatedAt) >= Number(localCarfax.sharedUpdatedAt || 0)))
+        GM_setValue(`oveCarfaxResult:${vehicle.vin}`, { ...shared.carfax, sharedUpdatedAt:shared.updatedAt });
+      if (shared.sheetRow) GM_setValue(`auctionAssistantSheetSaved:${vehicle.vin}`, { row:shared.sheetRow, savedAt:shared.sheetSavedAt || shared.updatedAt });
+      return Boolean(shared.kbb || shared.carfax || shared.sheetRow);
+    } catch (_) { return false; }
+  }
+  async function publishSharedSheetRow(vin, row) {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const { results, updateTime } = await readSharedResults();
+        results[vin] = { ...(results[vin] || {}), sheetRow:Number(row), sheetSavedAt:Date.now(), updatedAt:Date.now() };
+        await writeSharedResults(results, updateTime); return;
+      } catch (error) {
+        if (![409,412].includes(error.status) || attempt === 5) return;
+        await sleep(100 + attempt * 90);
+      }
     }
   }
   async function enqueueSharedKbb(vehicle, zip) {
@@ -3213,6 +3299,7 @@
     };
     GM_setValue(`oveCarfaxResult:${vin}`, result);
     GM_setValue(CARFAX_JOB_KEY, { ...pending, ...result, stage: 'CARFAX ready' });
+    publishSharedResult(vin, { vin, title:pending.title || '', mileage:pending.mileage || 0, color:pending.color || '' });
     return true;
   }
   function parseCarfaxDocument() { saveCarfaxText(document.body?.innerText || '', '', document.documentElement?.outerHTML || ''); }
@@ -3409,6 +3496,80 @@
       ontimeout: () => reject(new Error('KBB Bridge did not respond')),
     }));
   }
+  function sheetSaveSettings() {
+    const saved = GM_getValue(SHEET_SAVE_SETTINGS_KEY, {}) || {};
+    return { ...saved, webAppUrl:SHEET_SAVE_WEB_APP_URL };
+  }
+  function readLaneRun() {
+    const text = document.body?.innerText || '';
+    return text.match(/Lane\s*\/\s*Item\s*[:#-]?\s*([^\n]+)/i)?.[1]?.trim() ||
+      text.match(/Lane\s*\/\s*Run\s*[:#-]?\s*([^\n]+)/i)?.[1]?.trim() || '';
+  }
+  function postSheetVehicle(payload) {
+    const config = sheetSaveSettings();
+    if (!/^https:\/\/script\.google\.com\/macros\/s\//i.test(config.webAppUrl || ''))
+      return Promise.reject(new Error('Add the Google Sheets Web App URL in Settings first'));
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method:'POST', url:config.webAppUrl, timeout:30000, redirects:'follow',
+      headers:{ 'Content-Type':'text/plain;charset=UTF-8' },
+      data:JSON.stringify({ ...payload, secret:config.secret || '' }),
+      onload:(response) => {
+        let value = {}; try { value = JSON.parse(response.responseText || '{}'); } catch (_) {}
+        if ((response.status === 0 || (response.status >= 200 && response.status < 400)) && value.ok) resolve(value);
+        else {
+          const raw = String(response.responseText || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+          reject(new Error(value.error || raw.slice(0, 180) || `Sheet save error ${response.status}`));
+        }
+      },
+      onerror:() => reject(new Error('Could not reach Google Sheets saver')),
+      ontimeout:() => reject(new Error('Google Sheets saver timed out')),
+    }));
+  }
+  async function saveCurrentVehicle() {
+    const vehicle = readVehicle();
+    if (!vehicle.vin || !vehicle.mileage) { render('Open a vehicle page with VIN and mileage first.'); return; }
+    let sheet = sheetSaveSettings();
+    if (!sheet.secret) {
+      const secret = prompt('Enter the Sheets saver secret. It will be stored only in this browser:');
+      if (!String(secret || '').trim()) { render('Saving cancelled — enter the Sheets saver secret to continue.'); return; }
+      GM_setValue(SHEET_SAVE_SETTINGS_KEY, { secret:String(secret).trim() });
+      sheet = sheetSaveSettings();
+    }
+    const button = document.getElementById('ove-save-vehicle');
+    if (button) { button.disabled = true; button.textContent = '…'; }
+    const kbb = GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) || {};
+    const carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null) || {};
+    const deal = readDealSettings(vehicle.vin);
+    const payload = {
+        vin:vehicle.vin, title:vehicle.title, mileage:vehicle.mileage, color:vehicle.color,
+        pageUrl:location.href, laneRun:readLaneRun(), savedBy:GM_getValue('vin_marker_active_profile_v1', '') || '',
+        kbbFair:Number(kbb.values?.fair?.value || 0), kbbGood:Number(kbb.values?.good?.value || 0),
+        carfaxRetail:Number(carfax.retailValue || 0), carfaxUrl:carfax.reportUrl || '',
+        purchasePrice:Number(deal.purchasePrice || 0), extra:Number(deal.delivery || 0) + Number(deal.extra || 0),
+    };
+    try {
+      let response;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          response = await postSheetVehicle(payload);
+          break;
+        } catch (error) {
+          if (attempt !== 0 || !/unauthorized/i.test(String(error?.message || error))) throw error;
+          const secret = prompt('The saved secret was rejected. Enter the correct Sheets saver secret:');
+          if (!String(secret || '').trim()) throw new Error('Unauthorized');
+          GM_setValue(SHEET_SAVE_SETTINGS_KEY, { secret:String(secret).trim() });
+        }
+      }
+      if (!response) throw new Error('Google Sheets saver did not return a result');
+      GM_setValue(`auctionAssistantSheetSaved:${vehicle.vin}`, { row:response.row, savedAt:Date.now() });
+      publishSharedSheetRow(vehicle.vin, response.row);
+      render(response.duplicate ? `Already saved in Manheim v2 · row ${response.row}` : `Saved to Manheim v2 · row ${response.row}`);
+    } catch (error) {
+      const message = `Could not save to Manheim v2: ${error.message || error}`;
+      render(message);
+      alert(message);
+    }
+  }
   function makePanel() {
     if (document.getElementById('ove-kbb-panel')) return;
     const panel = document.createElement('aside');
@@ -3475,6 +3636,11 @@
       #ove-kbb-panel .miles .value{font-size:18px}#ove-kbb-panel button{border:0;border-radius:9px;cursor:pointer;font-weight:750}
       #ove-kbb-run{width:100%;padding:11px;margin-top:11px;background:#2864eb;color:#fff;font-size:15px}
       #ove-kbb-settings{background:transparent;color:#556070;padding:3px 6px}
+      #ove-save-vehicle{background:transparent;color:#d7264e;padding:3px 6px;font-size:21px;line-height:1}
+      #ove-save-vehicle.is-saved{color:#d7264e}
+      #ove-kbb-panel .vehicle-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+      #ove-kbb-panel .vehicle-head .vehicle{min-width:0;margin:0}
+      #ove-kbb-panel .vehicle-head #ove-save-vehicle{flex:0 0 auto;font-size:24px;padding:2px 4px}
       #ove-kbb-close{background:#eef2f7;color:#465365;padding:4px 9px;font-size:18px;line-height:1}
       #ove-kbb-status{margin-top:9px;font-size:12px}.progress{height:7px;background:#e4e9f1;border-radius:99px;
         overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:#2864eb;transition:width .4s ease}
@@ -3535,7 +3701,11 @@
     attachMarker(); setTimeout(attachMarker, 300); setTimeout(attachMarker, 1200);
     panel.querySelector('#ove-kbb-settings').onclick = () => {
       const current = settings(); const zip = prompt('ZIP code:', current.zip);
-      if (/^\d{5}$/.test(zip || '')) { GM_setValue(SETTINGS_KEY, { zip }); render(); }
+      if (/^\d{5}$/.test(zip || '')) GM_setValue(SETTINGS_KEY, { zip });
+      const sheet = sheetSaveSettings();
+      const secret = prompt('Sheets saver secret (stored only in this browser):', sheet.secret || '');
+      if (secret !== null) GM_setValue(SHEET_SAVE_SETTINGS_KEY, { secret:String(secret || '').trim() });
+      render();
     };
     refreshUpdateFooter();
     setTimeout(() => checkForUpdates(false), 700);
@@ -3677,6 +3847,7 @@
   function render(message = '') {
     makePanel();
     const vehicle = readVehicle(); const config = settings();
+    const sheetSaved = vehicle.vin ? GM_getValue(`auctionAssistantSheetSaved:${vehicle.vin}`, null) : null;
     const result = vehicle.vin ? GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) : null;
     const job = vehicle.vin ? GM_getValue(kbbJobKey(vehicle.vin), null) : null;
     const active = job?.vin === vehicle.vin && !job.completedAt;
@@ -3706,7 +3877,7 @@
       };
       return;
     }
-    target.innerHTML = `<div class="vehicle">${vehicle.title}</div><div class="muted">${vehicle.vin}</div>
+    target.innerHTML = `<div class="vehicle-head"><div class="vehicle">${vehicle.title}</div><button id="ove-save-vehicle" title="Save vehicle to Manheim v2">${sheetSaved ? '♥' : '♡'}</button></div><div class="muted">${vehicle.vin}</div>
       <div class="grid miles">
         <div class="cell"><div class="label">Avg. Mileage</div><div class="value">${miles(result?.avgMileage)}</div></div>
         <div class="cell"><div class="label">ODO</div><div class="value">${miles(vehicle.mileage || result?.odo)}</div></div>
@@ -3730,6 +3901,12 @@
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
         `Color: ${vehicle.color} · ZIP: ${config.zip}`)}</div>`;
+    const saveButton = document.getElementById('ove-save-vehicle');
+    if (saveButton) {
+      saveButton.classList.toggle('is-saved', Boolean(sheetSaved));
+      saveButton.title = sheetSaved ? `Saved in Manheim v2 · row ${sheetSaved.row || ''}` : 'Save vehicle to Manheim v2';
+      saveButton.onclick = () => saveCurrentVehicle();
+    }
     document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run(); };
     bindDealInputs(vehicle.vin);
   }
@@ -3744,7 +3921,7 @@
   }
   async function startCarfax(vehicle) {
     GM_setValue(`oveCarfaxResult:${vehicle.vin}`, null);
-    GM_setValue(CARFAX_JOB_KEY, { vin: vehicle.vin, startedAt: Date.now(), stage: 'Opening CARFAX' });
+    GM_setValue(CARFAX_JOB_KEY, { ...vehicle, vin: vehicle.vin, startedAt: Date.now(), stage: 'Opening CARFAX' });
     try {
       const response = await carfaxRequest('POST', 'https://carfax-app.vercel.app/api/pro/requests', {
         vin: vehicle.vin, plate: null, state: null,
@@ -3800,6 +3977,33 @@
       values: { ...(old.values || {}), ...incomingValues },
     };
     GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, saved);
+    publishSharedResult(vehicle.vin, vehicle);
+  }
+  async function runLocalKbb(vehicle, config, reason = '') {
+    const startedAt = Date.now();
+    GM_setValue(kbbJobKey(vehicle.vin), {
+      ...vehicle, stage:reason ? 'Cloud quota reached · using local KBB Bridge' : 'Using local KBB Bridge',
+      progress:3, startedAt
+    });
+    render();
+    const accepted = await bridge('POST', { ...vehicle, zip:config.zip });
+    if (accepted.status === 'error') throw new Error(accepted.message || 'Local KBB Bridge error');
+    const deadline = Date.now() + 12 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await sleep(1200);
+      const state = await bridge('GET');
+      savePartial(vehicle, config, state);
+      const done = state.status === 'done';
+      GM_setValue(kbbJobKey(vehicle.vin), {
+        ...vehicle, stage:state.message || 'KBB in progress on this Mac',
+        progress:state.progress || 3, eta:state.eta, startedAt,
+        completedAt:done ? Date.now() : null
+      });
+      render();
+      if (done) return;
+      if (state.status === 'error') throw new Error(state.message || 'Local KBB Bridge failed');
+    }
+    throw new Error('Timed out waiting for local KBB Bridge');
   }
   async function run() {
     if (Date.now() - lastRun < 1500) return; lastRun = Date.now();
@@ -3810,11 +4014,20 @@
     render();
     try {
       startCarfax(vehicle);
-      const cloudJobId = await enqueueSharedKbb(vehicle, config.zip);
+      let cloudJobId;
+      try {
+        cloudJobId = await enqueueSharedKbb(vehicle, config.zip);
+      } catch (cloudError) {
+        if (cloudError.status === 429 || /quota|too many requests|resource_exhausted/i.test(cloudError.message || '')) {
+          await runLocalKbb(vehicle, config, cloudError.message);
+          return;
+        }
+        throw cloudError;
+      }
       GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage:'Waiting in KBB queue', progress:3, startedAt:Date.now() });
       const deadline = Date.now() + 12 * 60 * 1000;
       while (Date.now() < deadline) {
-        await sleep(1100);
+        await sleep(5000);
         const { state:queue } = await readSharedKbbQueue();
         const state = queue.jobs?.[cloudJobId];
         if (!state) throw new Error('KBB queue lost this request');
@@ -3851,6 +4064,7 @@
     if (!force && signature === lastVehicleSignature) return;
     lastVehicleSignature = signature;
     render();
+    hydrateSharedResult(vehicle, force).then((loaded) => { if (loaded) render('Loaded shared KBB/CARFAX data'); });
   }
   refreshIfVehicleChanged(true);
   let helperMutationTimer;
