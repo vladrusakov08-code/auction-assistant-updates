@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.7
+// @version      2.2.8
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3037,7 +3037,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.7';
+  const SCRIPT_VERSION = '2.2.8';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3620,6 +3620,8 @@
         align-items:center;padding:15px 18px;background:#fff;border-bottom:1px solid #e5e7eb;position:sticky;top:0;z-index:3}
       #ove-kbb-panel h2{font-size:18px;margin:0}#ove-kbb-panel .body{padding:20px 16px}
       #ove-kbb-panel .head-actions{display:flex;align-items:center;gap:5px}
+      #ove-theme-toggle{min-width:43px;padding:5px 7px;background:#eef2f7;color:#465365;font-size:10px;
+        line-height:1.2;text-transform:uppercase}
       #ove-kbb-panel #vin-marker-account-row{margin:0!important;padding:0!important;border:0!important;display:block!important}
       #ove-kbb-panel #vin-marker-account-row>span{display:none!important}
       #ove-kbb-panel #vin-marker-account-row select{max-width:92px!important;height:31px!important;padding:3px 6px!important;
@@ -3701,9 +3703,39 @@
         box-shadow:0 6px 20px #0004;cursor:pointer;font:800 12px system-ui;letter-spacing:.04em;transition:transform .2s,opacity .2s}
       #ove-assistant-toggle .toggle-icon{font-size:20px;line-height:1}#ove-assistant-toggle .toggle-text{writing-mode:vertical-rl;
         text-orientation:mixed}#ove-assistant-toggle.panel-open{transform:translateX(100%);opacity:0;pointer-events:none}
+      #ove-kbb-panel[data-theme="dark"]{color:#e5e7eb;background:#0f172a;border-color:#334155;box-shadow:0 18px 45px #000a}
+      #ove-kbb-panel[data-theme="dark"] header{background:#111827;border-bottom-color:#334155}
+      #ove-kbb-panel[data-theme="dark"] .manual,
+      #ove-kbb-panel[data-theme="dark"] .card,
+      #ove-kbb-panel[data-theme="dark"] .cell,
+      #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-card{background:#1e293b;border-color:#3b4a60}
+      #ove-kbb-panel[data-theme="dark"] .manual input,
+      #ove-kbb-panel[data-theme="dark"] .deal-field .input-wrap,
+      #ove-kbb-panel[data-theme="dark"] #vin-marker-account-row select,
+      #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-slot select{background:#0f172a!important;color:#e5e7eb!important;border-color:#475569!important}
+      #ove-kbb-panel[data-theme="dark"] .deal-field input{color:#e5e7eb}
+      #ove-kbb-panel[data-theme="dark"] .label,
+      #ove-kbb-panel[data-theme="dark"] .section-title,
+      #ove-kbb-panel[data-theme="dark"] .deal-field label{color:#94a3b8}
+      #ove-kbb-panel[data-theme="dark"] .muted,
+      #ove-kbb-panel[data-theme="dark"] .manual-help,
+      #ove-kbb-panel[data-theme="dark"] .deal-note,
+      #ove-kbb-panel[data-theme="dark"] .carfax-status{color:#94a3b8}
+      #ove-kbb-panel[data-theme="dark"] .carfax-head,
+      #ove-kbb-panel[data-theme="dark"] .deal-card summary{background:linear-gradient(180deg,#1e293b,#172033);border-color:#3b4a60}
+      #ove-kbb-panel[data-theme="dark"] .carfax-metric,
+      #ove-kbb-panel[data-theme="dark"] .deal-body,
+      #ove-kbb-panel[data-theme="dark"] #ove-update-footer{border-color:#3b4a60}
+      #ove-kbb-panel[data-theme="dark"] .deal-recommended{background:#172554;color:#bfdbfe}
+      #ove-kbb-panel[data-theme="dark"] .deal-recommended .value{color:#93c5fd}
+      #ove-kbb-panel[data-theme="dark"] #ove-kbb-close,
+      #ove-kbb-panel[data-theme="dark"] #ove-theme-toggle{background:#334155;color:#e5e7eb}
+      #ove-kbb-panel[data-theme="dark"] #ove-kbb-settings{color:#cbd5e1}
+      #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-slot>#ove-vin-marker-content>div:first-child{
+        background:#172033!important;color:#e5e7eb!important;border-color:#3b4a60!important}
       .vin-marker-filter-hidden{display:none!important}
       .pulse{animation:kbbPulse 1.25s ease-in-out infinite}@keyframes kbbPulse{50%{opacity:.5}}
-    </style><header><h2>${AUCTION_SITE} Auction Assistant</h2><div class="head-actions"><button id="ove-kbb-settings" title="Settings">⚙</button>
+    </style><header><h2>${AUCTION_SITE} Auction Assistant</h2><div class="head-actions"><button id="ove-theme-toggle" title="Theme: Auto">Auto</button><button id="ove-kbb-settings" title="Settings">⚙</button>
       <button id="ove-kbb-close" title="Hide panel">×</button></div></header>
     <section id="ove-assistant-content">${IS_SUPPORTED_AUCTION ? '<div id="ove-vin-marker-card"><div class="marker-card-head"><div class="section-title">VIN Marker</div><div id="ove-vin-marker-account-slot"></div></div><div id="ove-vin-marker-slot"></div></div>' : ''}
       <div class="body"><div id="ove-kbb-content">Reading ${AUCTION_SITE}…</div>
@@ -3714,8 +3746,29 @@
     toggle.title = `Open ${AUCTION_SITE} Auction Assistant`;
     toggle.innerHTML = '<span class="toggle-icon">🚘</span><span class="toggle-text">ASSISTANT</span>';
     document.documentElement.appendChild(toggle);
-    const getUi = () => ({ open: true, ...(GM_getValue(ASSISTANT_UI_KEY, {}) || {}) });
+    const getUi = () => ({ open:true, theme:'auto', ...(GM_getValue(ASSISTANT_UI_KEY, {}) || {}) });
     const saveUi = (next) => GM_setValue(ASSISTANT_UI_KEY, { ...getUi(), ...next });
+    const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+    const themeButton = panel.querySelector('#ove-theme-toggle');
+    const applyTheme = (mode = getUi().theme) => {
+      const normalized = ['auto','dark','light'].includes(mode) ? mode : 'auto';
+      const effective = normalized === 'auto' ? (themeMedia.matches ? 'dark' : 'light') : normalized;
+      panel.dataset.theme = effective;
+      themeButton.textContent = normalized === 'auto' ? 'Auto' : normalized === 'dark' ? 'Dark' : 'Light';
+      themeButton.title = `Theme: ${themeButton.textContent} · click to change`;
+    };
+    themeButton.onclick = () => {
+      const current = getUi().theme;
+      const next = current === 'auto' ? 'dark' : current === 'dark' ? 'light' : 'auto';
+      saveUi({ theme:next });
+      applyTheme(next);
+    };
+    const followBrowserTheme = () => {
+      if (getUi().theme === 'auto') applyTheme('auto');
+    };
+    if (typeof themeMedia.addEventListener === 'function') themeMedia.addEventListener('change', followBrowserTheme);
+    else if (typeof themeMedia.addListener === 'function') themeMedia.addListener(followBrowserTheme);
+    applyTheme();
     const setOpen = (open) => {
       panel.classList.toggle('is-hidden', !open);
       toggle.classList.toggle('panel-open', open);
