@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.3
+// @version      2.2.4
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -96,6 +96,7 @@
 
     const DAILY_STORAGE = `${SITE}_daily_marks_v1`;
     const ACTIVE_USER_STORAGE = 'vin_marker_active_profile_v1';
+    const HIDE_MODE_STORAGE = `${SITE}_vin_marker_hide_mode_v1`;
 
     /* ========================================
        COLORS AND USERS
@@ -168,7 +169,8 @@
     let dailyVladMarks = new Set();
     let dailyWorkerMarks = new Set();
     let statsMode = 'today';
-    let hideMode = 'show';
+    let hideMode = GM_getValue(HIDE_MODE_STORAGE, 'show');
+    if (!['show', 'mine', 'all'].includes(hideMode)) hideMode = 'show';
     const filteredCards = new Set();
     const paintedElementStyles = new Map();
     let activeUser = GM_getValue(ACTIVE_USER_STORAGE, '');
@@ -1119,6 +1121,7 @@
         vin
     ) {
         let node = element;
+        const candidates = [];
 
         for (
             let i = 0;
@@ -1143,14 +1146,47 @@
                 rect.height > 100 &&
                 rect.height < 1000
             ) {
-                return node;
+                const normalizedText =
+                    text.replace(/\s+/g, ' ').trim();
+
+                const titleCount =
+                    [...node.querySelectorAll(
+                        'a, h1, h2, h3, h4, [class*="title" i]'
+                    )].filter(candidate => {
+                        const candidateText =
+                            candidate.textContent
+                                ?.replace(/\s+/g, ' ')
+                                .trim() || '';
+
+                        return (
+                            candidateText.length >= 8 &&
+                            candidateText.length <= 160 &&
+                            TITLE_REGEX.test(candidateText) &&
+                            !candidateText.match(VIN_REGEX)
+                        );
+                    }).length;
+
+                const hasVehicleActions =
+                    /\b(?:BUY NOW|MAKE OFFER|BID(?:\s|\$)|WORKBOOK|CARFAX|VIEW REPORT|ADD NOTE|REMOVE|HIDE)\b/i
+                        .test(normalizedText);
+
+                candidates.push({
+                    node,
+                    score:
+                        (titleCount === 1 ? 10000 : 0) +
+                        (hasVehicleActions ? 5000 : 0) +
+                        Math.min(rect.height, 900)
+                });
             }
 
             node =
                 node.parentElement;
         }
 
-        return element.parentElement;
+        return candidates
+            .sort((a, b) => b.score - a.score)[0]
+            ?.node ||
+            element.parentElement;
     }
 
     function findTitleElement(
@@ -2931,6 +2967,7 @@
 
     hideSelect.addEventListener('change', () => {
         hideMode = hideSelect.value;
+        GM_setValue(HIDE_MODE_STORAGE, hideMode);
 
         if (hideMode === 'show') {
             filteredCards.forEach(card => {
@@ -3014,6 +3051,27 @@
         }
     );
 
+    const refreshFilterAfterNavigation = () => {
+        [100, 500, 1400].forEach(delay => {
+            setTimeout(() => {
+                if (hideMode !== 'show') paintSeenVins();
+            }, delay);
+        });
+    };
+
+    window.addEventListener('hashchange', refreshFilterAfterNavigation);
+    window.addEventListener('popstate', refreshFilterAfterNavigation);
+    window.addEventListener('pageshow', refreshFilterAfterNavigation);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) refreshFilterAfterNavigation();
+    });
+
+    setInterval(() => {
+        if (hideMode !== 'show' && document.visibilityState === 'visible') {
+            paintSeenVins();
+        }
+    }, 5000);
+
     setInterval(
         () => {
             synchronize(false);
@@ -3026,7 +3084,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.3';
+  const SCRIPT_VERSION = '2.2.4';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =

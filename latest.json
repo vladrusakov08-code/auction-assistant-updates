@@ -1,6 +1,6 @@
 {
-  "version": "2.2.3",
+  "version": "2.2.4",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-23T21:18:44-07:00",
-  "notes": "Prevent duplicate KBB runs by preferring the local bridge, superseding older queued requests and expiring stale fallback jobs"
+  "releasedAt": "2026-07-24T17:06:20-07:00",
+  "notes": "Fix OVE Hide Mine card detection, preserve filter mode, keep vehicle links clickable and reapply filtering after SPA navigation"
 }
