@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.6
+// @version      2.2.7
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3037,7 +3037,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.6';
+  const SCRIPT_VERSION = '2.2.7';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3062,6 +3062,10 @@
   const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
   const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
+  const PAGE_INSTANCE_ID =
+    typeof crypto?.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const DEFAULTS = { zip: '90001' };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let lastRun = 0;
@@ -3485,9 +3489,20 @@
   function readVehicle() {
     const detectedVin = findVin();
     const manual = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
-    const manualBelongsHere = manual.pageUrl === location.href;
+    const manualBelongsHere =
+      manual.pageUrl === location.href &&
+      manual.pageInstanceId === PAGE_INSTANCE_ID;
     const vin = detectedVin || (manualBelongsHere ? String(manual.vin || '').toUpperCase() : '');
     if (!vin) return { vin: '', mileage: 0, title: '', color: 'white' };
+    if (!detectedVin && manualBelongsHere) {
+      return {
+        vin,
+        mileage:Number(manual.mileage || 0),
+        title:'Manual VIN lookup',
+        color:'white',
+        manual:true
+      };
+    }
     const text = document.body?.innerText || '';
     const mmrLink = [...document.querySelectorAll('a[href*="mmr.manheim.com"]')]
       .find((a) => !vin || a.href.includes(`vin=${vin}`));
@@ -3894,7 +3909,10 @@
         const mileage = Number(document.getElementById('ove-manual-mileage').value.replace(/[^\d]/g, ''));
         if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { render('Enter a valid 17-character VIN.'); return; }
         if (!mileage) { render('Enter the vehicle mileage.'); return; }
-        GM_setValue(MANUAL_VEHICLE_KEY, { vin, mileage, pageUrl: location.href, savedAt: Date.now() });
+        GM_setValue(MANUAL_VEHICLE_KEY, {
+          vin, mileage, pageUrl:location.href,
+          pageInstanceId:PAGE_INSTANCE_ID, savedAt:Date.now()
+        });
         render(); run();
       };
       return;
