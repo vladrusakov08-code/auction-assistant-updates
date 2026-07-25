@@ -1,6 +1,6 @@
 {
-  "version": "2.2.4",
+  "version": "2.2.5",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-24T17:06:20-07:00",
-  "notes": "Fix OVE Hide Mine card detection, preserve filter mode, keep vehicle links clickable and reapply filtering after SPA navigation"
+  "releasedAt": "2026-07-24T17:14:40-07:00",
+  "notes": "Emergency performance rollback: remove repeated full-page OVE scans and restore responsive vehicle links and controls"
 }
