@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.5
+// @version      2.2.6
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -1665,7 +1665,7 @@
             return findManheimVinOccurrences();
         }
 
-        const results = [];
+        const candidates = new Map();
 
         document
             .querySelectorAll('body *')
@@ -1693,28 +1693,27 @@
                 if (!vins) return;
 
                 vins.forEach(vin => {
-                    const card =
-                        findVehicleCard(
-                            element,
-                            vin
-                        );
-
-                    results.push({
-                        vin,
-                        vinElement:
-                            element,
-
-                        titleElement:
-                            findTitleElement(
-                                card,
-                                element
-                            ),
-                        card
-                    });
+                    const normalizedVin = vin.toUpperCase();
+                    const existing = candidates.get(normalizedVin);
+                    if (!existing || text.length < existing.textLength) {
+                        candidates.set(normalizedVin, {
+                            vin: normalizedVin,
+                            vinElement: element,
+                            textLength: text.length
+                        });
+                    }
                 });
             });
 
-        return results;
+        return [...candidates.values()].map(item => {
+            const card = findVehicleCard(item.vinElement, item.vin);
+            return {
+                vin: item.vin,
+                vinElement: item.vinElement,
+                titleElement: findTitleElement(card, item.vinElement),
+                card
+            };
+        });
     }
 
     /* ========================================
@@ -2994,7 +2993,19 @@
     let mutationTimer;
 
     const observer =
-        new MutationObserver(() => {
+        new MutationObserver(mutations => {
+            const hasExternalChange = mutations.some(mutation => {
+                const target = mutation.target?.nodeType === Node.ELEMENT_NODE
+                    ? mutation.target
+                    : mutation.target?.parentElement;
+
+                return target && !target.closest(
+                    '#ove-vin-marker-source, #ove-kbb-panel, #ove-assistant-toggle'
+                );
+            });
+
+            if (!hasExternalChange) return;
+
             clearTimeout(
                 mutationTimer
             );
@@ -3002,7 +3013,7 @@
             mutationTimer =
                 setTimeout(
                     paintSeenVins,
-                    350
+                    700
                 );
         });
 
@@ -3026,7 +3037,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.5';
+  const SCRIPT_VERSION = '2.2.6';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =

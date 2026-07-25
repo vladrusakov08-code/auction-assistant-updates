@@ -1,6 +1,6 @@
 {
-  "version": "2.2.5",
+  "version": "2.2.6",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-24T17:14:40-07:00",
-  "notes": "Emergency performance rollback: remove repeated full-page OVE scans and restore responsive vehicle links and controls"
+  "releasedAt": "2026-07-24T17:20:55-07:00",
+  "notes": "Fix OVE page freezes by ignoring assistant-owned DOM mutations and processing each visible VIN only once"
 }
