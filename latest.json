@@ -1,6 +1,6 @@
 {
-  "version": "2.2.8",
+  "version": "2.3.3",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-24T18:53:40-07:00",
-  "notes": "Add Auto, Dark and Light themes to Auction Assistant, following the browser theme by default and saving manual choice per browser"
+  "releasedAt": "2026-07-26T15:59:01-07:00",
+  "notes": "Show the real local KBB Bridge check instead of the misleading shared queue status while KBB is starting"
 }

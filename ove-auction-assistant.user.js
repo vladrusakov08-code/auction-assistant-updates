@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.2.8
+// @version      2.3.3
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -12,7 +12,7 @@
 // @match        *://copart.com/*
 // @match        *://www.copart.com/*
 // @match        *://*.copart.com/*
-// @match        *://*/*
+// @match        https://carfax-app.vercel.app/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -22,6 +22,9 @@
 // @connect      firestore.googleapis.com
 // @connect      127.0.0.1
 // @connect      carfax-app.vercel.app
+// @connect      api.zippopotam.us
+// @connect      nominatim.openstreetmap.org
+// @connect      router.project-osrm.org
 // @connect      raw.githubusercontent.com
 // @updateURL    https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
@@ -3037,7 +3040,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.2.8';
+  const SCRIPT_VERSION = '2.3.3';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3068,7 +3071,6 @@
       : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const DEFAULTS = { zip: '90001' };
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  let lastRun = 0;
   const kbbJobKey = (vin) => `${JOB_KEY}:${vin}`;
 
   function queueRequest(method, url, body = null, headers = {}) {
@@ -3195,9 +3197,16 @@
       if (!shared) return false;
       const localKbb = GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null);
       const localCarfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
+      const activeCarfax = GM_getValue(CARFAX_JOB_KEY, null);
+      const manual = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+      const manualLookupStartedAt = String(manual.vin || '').toUpperCase() === vehicle.vin
+        ? Number(manual.lookupStartedAt || 0) : 0;
       if (shared.kbb && (!localKbb || Number(shared.updatedAt) >= Number(localKbb.sharedUpdatedAt || 0)))
         GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, { ...shared.kbb, sharedUpdatedAt:shared.updatedAt });
-      if (shared.carfax && (!localCarfax || Number(shared.updatedAt) >= Number(localCarfax.sharedUpdatedAt || 0)))
+      const newCarfaxRunning = activeCarfax?.vin === vehicle.vin && !activeCarfax.completedAt;
+      const sharedCarfaxIsCurrent = Number(shared.carfax?.completedAt || 0) >= manualLookupStartedAt;
+      if (shared.carfax && !newCarfaxRunning && sharedCarfaxIsCurrent &&
+          (!localCarfax || Number(shared.updatedAt) >= Number(localCarfax.sharedUpdatedAt || 0)))
         GM_setValue(`oveCarfaxResult:${vehicle.vin}`, { ...shared.carfax, sharedUpdatedAt:shared.updatedAt });
       if (shared.sheetRow) GM_setValue(`auctionAssistantSheetSaved:${vehicle.vin}`, { row:shared.sheetRow, savedAt:shared.sheetSavedAt || shared.updatedAt });
       return Boolean(shared.kbb || shared.carfax || shared.sheetRow);
@@ -3281,6 +3290,36 @@
     } catch (_) {}
     return '';
   }
+  function extractCarfaxVehicleTitle(text = '', rawHtml = '') {
+    if (rawHtml) {
+      try {
+        const doc = new DOMParser().parseFromString(rawHtml, 'text/html');
+        const candidates = [
+          doc.querySelector('meta[property="og:title"]')?.content,
+          doc.querySelector('meta[name="twitter:title"]')?.content,
+          doc.querySelector('h1,h2,h3')?.textContent,
+          doc.title,
+        ];
+        for (const candidate of candidates) {
+          const title = String(candidate || '').match(/\b((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'’\/-]{3,80})/i)?.[1]
+            ?.replace(/\s+/g, ' ').replace(/\s*(?:\||-|–)\s*CARFAX.*$/i, '').trim();
+          if (title && !/\b(?:report|history)\b/i.test(title)) return title;
+        }
+      } catch (_) {}
+    }
+    const clean = String(text || '').replace(/\s+/g, ' ').trim();
+    const patterns = [
+      /CARFAX Vehicle History Report(?:™)?\s+(?:for\s+)?((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'’\/-]{2,80}?)(?=\s+VIN\s*:)/i,
+      /Vehicle History Report(?:™)?\s+(?:for\s+)?((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'’\/-]{2,80}?)(?=\s+VIN\s*:)/i,
+      /((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'’\/-]{2,80}?)(?=\s+VIN\s*:)/i,
+      /\b((?:19|20)\d{2}\s+(?:ACURA|AUDI|BMW|BUICK|CADILLAC|CHEVROLET|CHRYSLER|DODGE|FORD|GENESIS|GMC|HONDA|HYUNDAI|INFINITI|JEEP|KIA|LEXUS|LINCOLN|MAZDA|MERCEDES-BENZ|MITSUBISHI|NISSAN|PORSCHE|RAM|SUBARU|TESLA|TOYOTA|VOLKSWAGEN|VOLVO)\s+[A-Z0-9][A-Z0-9 .&'’\/-]{1,60}?)(?=\s+(?:VIN|CARFAX|Vehicle History|Ownership|Title History))/i,
+    ];
+    for (const pattern of patterns) {
+      const title = clean.match(pattern)?.[1]?.replace(/\s+/g, ' ').trim();
+      if (title && !/\b(?:report|history)\b/i.test(title)) return title;
+    }
+    return '';
+  }
   function saveCarfaxText(rawText, explicitReportUrl = '', rawHtml = '') {
     const pending = GM_getValue(CARFAX_JOB_KEY, null);
     if (!pending || pending.completedAt || Date.now() - pending.startedAt > 5 * 60 * 1000) return false;
@@ -3311,8 +3350,10 @@
     if (!noAccidents && !hasAccidentOrDamage) return false;
     const retailMatch = text.match(/CARFAX\s+(?:Retail\s+)?Value\s*\$([\d,]+)/i) ||
       text.match(/\$([\d,]+)\s*CARFAX\s+Retail\s+Value/i);
+    const vehicleTitle = extractCarfaxVehicleTitle(text, rawHtml);
     const result = {
       vin, owners,
+      title: vehicleTitle || pending.title || '',
       accidents: noAccidents ? 0 : (accidentMatch ? Number(accidentMatch[1]) : null),
       accidentType: noAccidents ? 'clean' : hasAccidentOrDamage ? 'reported' : 'history',
       accidentLabel: noAccidents ? 'No Accidents or Damage' :
@@ -3323,6 +3364,11 @@
       reportUrl: explicitReportUrl || pending.reportUrl || document.referrer.match(/https:\/\/carfax-app\.vercel\.app\/pro\/report\/[^/?#]+/)?.[0] || '',
       completedAt: Date.now(),
     };
+    const manual = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+    if (vehicleTitle && String(manual.vin || '').toUpperCase() === vin &&
+        (!manual.title || manual.title === 'Manual VIN lookup')) {
+      GM_setValue(MANUAL_VEHICLE_KEY, { ...manual, title:vehicleTitle, savedAt:Date.now() });
+    }
     GM_setValue(`oveCarfaxResult:${vin}`, result);
     GM_setValue(CARFAX_JOB_KEY, { ...pending, ...result, stage: 'CARFAX ready' });
     publishSharedResult(vin, { vin, title:pending.title || '', mileage:pending.mileage || 0, color:pending.color || '' });
@@ -3402,6 +3448,9 @@
     tick(); setInterval(tick, 500);
   }
   if (location.hostname === 'carfax-app.vercel.app') return;
+  // The CARFAX helper above is the only supported non-auction page.
+  // Never attach the assistant UI or its DOM observers to unrelated tabs.
+  if (!IS_SUPPORTED_AUCTION) return;
 
   function settings() { return { ...DEFAULTS, ...(GM_getValue(SETTINGS_KEY, {}) || {}) }; }
   function money(value) {
@@ -3495,10 +3544,11 @@
     const vin = detectedVin || (manualBelongsHere ? String(manual.vin || '').toUpperCase() : '');
     if (!vin) return { vin: '', mileage: 0, title: '', color: 'white' };
     if (!detectedVin && manualBelongsHere) {
+      const savedCarfax = GM_getValue(`oveCarfaxResult:${vin}`, null) || {};
       return {
         vin,
         mileage:Number(manual.mileage || 0),
-        title:'Manual VIN lookup',
+        title:manual.title || savedCarfax.title || 'Manual VIN lookup',
         color:'white',
         manual:true
       };
@@ -3514,8 +3564,14 @@
     const visibleHeading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
       .find((element) => element.getClientRects().length && /\b(?:19|20)\d{2}\s+[A-Z0-9]/i.test(element.textContent || ''))
       ?.textContent?.trim();
-    const title = visibleHeading || text.match(/Provided:\s*([^\n]+)/i)?.[1] ||
-      text.match(/\b(?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'\/-]{3,70}/i)?.[0]?.trim() || (!detectedVin && manual.vin ? 'Manual VIN lookup' : `${AUCTION_SITE} vehicle`);
+    // Manheim's "Provided:" value is often an abbreviated decoder name
+    // (for example "TOYOTA COR LE LE"). Prefer the full listing title shown
+    // immediately above it and use the decoder name only as a final fallback.
+    const listingTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}[^\n]{3,90})\s*\n\s*Provided\s*:/im)?.[1]?.trim();
+    const generalTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'\/-]{3,70})\s*(?:\n|$)/im)?.[1]?.trim();
+    const title = visibleHeading || listingTitle || generalTitle ||
+      text.match(/Provided:\s*([^\n]+)/i)?.[1] ||
+      (!detectedVin && manual.vin ? 'Manual VIN lookup' : `${AUCTION_SITE} vehicle`);
     const color = normalizeColor(mmr?.searchParams.get('color') ||
       text.match(/Exterior(?: Base)? Color\s*[:\n]?\s*([^\n]+)/i)?.[1] ||
       text.match(/Color\s*[:\n]?\s*(Beige|Black|Blue|Brown|Burgundy|Gold|Gray|Grey|Green|Orange|Pink|Purple|Red|Silver|White|Yellow)/i)?.[1] || '');
@@ -3632,6 +3688,12 @@
       #ove-kbb-panel .manual input{width:100%;height:42px;margin-bottom:8px;padding:0 11px;border:1px solid #ccd4df;
         border-radius:8px;background:#fff;color:#30343b;font:650 14px system-ui;text-transform:uppercase}
       #ove-kbb-panel .manual .manual-mileage{text-transform:none}#ove-manual-run{width:100%;padding:11px;background:#2864eb;color:#fff}
+      #ove-kbb-panel .lookup-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:3px 0 8px}
+      #ove-kbb-panel .lookup-actions button{padding:11px 8px;font-size:14px;color:#fff}
+      #ove-carfax-run,#ove-manual-carfax{background:#20242a}
+      #ove-kbb-only-run,#ove-manual-kbb{background:#123f82}
+      #ove-kbb-panel .lookup-error{margin-top:8px;color:#dc2626;font-weight:750}
+      #ove-kbb-panel .manual input.is-error{border:2px solid #dc2626;box-shadow:0 0 0 3px #dc26261f}
       #ove-kbb-panel .card{margin-top:12px;padding:13px;border:1px solid #d8dee8;border-radius:12px;background:#fff}
       #ove-kbb-panel .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:9px}
       #ove-kbb-panel .cell{border:1px solid #e1e5eb;border-radius:9px;padding:9px;text-align:center;background:#fff}
@@ -3667,6 +3729,7 @@
       #ove-kbb-panel .deal-field .input-wrap{display:flex;align-items:center;height:37px;border:1px solid #ccd4df;border-radius:8px;background:#fff;overflow:hidden}
       #ove-kbb-panel .deal-field .input-wrap span{padding-left:9px;color:#7a8492;font-weight:700}
       #ove-kbb-panel .deal-field input{width:100%;height:35px;padding:0 8px;border:0;outline:0;background:transparent;color:#30343b;font:750 14px system-ui}
+      #ove-kbb-panel .delivery-note{margin-top:4px;color:#8da0bc;font-size:9px;line-height:1.25;text-transform:none}
       #ove-kbb-panel .deal-recommended{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:10px 12px;
         border-radius:9px;background:#eaf1ff;color:#174d9b}
       #ove-kbb-panel .deal-recommended .value{font-size:20px;color:#174d9b}
@@ -3720,6 +3783,7 @@
       #ove-kbb-panel[data-theme="dark"] .muted,
       #ove-kbb-panel[data-theme="dark"] .manual-help,
       #ove-kbb-panel[data-theme="dark"] .deal-note,
+      #ove-kbb-panel[data-theme="dark"] .delivery-note,
       #ove-kbb-panel[data-theme="dark"] .carfax-status{color:#94a3b8}
       #ove-kbb-panel[data-theme="dark"] .carfax-head,
       #ove-kbb-panel[data-theme="dark"] .deal-card summary{background:linear-gradient(180deg,#1e293b,#172033);border-color:#3b4a60}
@@ -3866,13 +3930,140 @@
     const people = positions.map(x => `<circle cx="${x}" cy="10" r="3.4"/><path d="M${x - 5} 24c.4-6 2.1-9 5-9s4.6 3 5 9Z"/>`).join('');
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
+  const DELIVERY_DESTINATION = { zip:'90045', lat:33.9581, lon:-118.3890 };
+  const deliveryLookups = new Map();
+  function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
+  function jsonRequest(url) {
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method:'GET', url, timeout:12000,
+      headers:{ 'Accept':'application/json', 'User-Agent':'AuctionAssistant/2.3' },
+      onload:(response) => {
+        if (response.status < 200 || response.status >= 300) {
+          reject(new Error(`Location service error ${response.status}`)); return;
+        }
+        try { resolve(JSON.parse(response.responseText || '{}')); } catch (error) { reject(error); }
+      },
+      onerror:() => reject(new Error('Location service network error')),
+      ontimeout:() => reject(new Error('Location service timed out')),
+    }));
+  }
+  function readDeliveryOrigin() {
+    const text = document.body?.innerText || '';
+    const labeledZip = text.match(/(?:Pickup|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,140}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] || '';
+    const pickup = text.match(/(?:^|\n)\s*Pickup\s*:?\s*([A-Z]{2}\s*-\s*[^\n]{2,90})/im)?.[1]?.trim();
+    const auctionLocation = text.match(/(?:Auction Location|Branch|Yard|Facility)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim();
+    const copartLocation = AUCTION_SITE === 'COPART'
+      ? text.match(/(?:Location|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim() : '';
+    let label = pickup || auctionLocation || copartLocation || '';
+    if (label) {
+      label = label.replace(/\s*(?:View Map|Directions|Get Directions).*$/i, '').trim();
+      if (label.length > 100) label = label.slice(0, 100).trim();
+    }
+    return labeledZip || label ? { zip:labeledZip, label:label || `ZIP ${labeledZip}` } : null;
+  }
+  async function geocodeDeliveryOrigin(origin) {
+    const cacheKey = `auctionAssistantGeocode:${origin.zip || origin.label}`;
+    const cached = GM_getValue(cacheKey, null);
+    if (cached?.lat && cached?.lon) return cached;
+    let point;
+    if (origin.zip) {
+      const result = await jsonRequest(`https://api.zippopotam.us/us/${origin.zip}`);
+      const place = result?.places?.[0];
+      if (place) point = {
+        lat:Number(place.latitude), lon:Number(place.longitude),
+        label:origin.label || `${place['place name']}, ${place['state abbreviation']} ${origin.zip}`,
+        zip:origin.zip,
+      };
+    }
+    if (!point && origin.label) {
+      const query = origin.label.replace(/^([A-Z]{2})\s*-\s*(.+)$/i, '$2, $1').replace(/\s+/g, ' ').trim();
+      const results = await jsonRequest(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=1&q=${encodeURIComponent(query)}`);
+      const place = Array.isArray(results) ? results[0] : null;
+      if (place) point = { lat:Number(place.lat), lon:Number(place.lon), label:origin.label, zip:origin.zip || '' };
+    }
+    if (!point?.lat || !point?.lon) throw new Error('Auction location was not recognized');
+    GM_setValue(cacheKey, point);
+    return point;
+  }
+  function straightLineMiles(a, b) {
+    const radians = (degrees) => degrees * Math.PI / 180;
+    const dLat = radians(b.lat - a.lat); const dLon = radians(b.lon - a.lon);
+    const lat1 = radians(a.lat); const lat2 = radians(b.lat);
+    const value = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+    return 3958.8 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
+  }
+  async function deliveryRoadMiles(originPoint) {
+    try {
+      const route = await jsonRequest(`https://router.project-osrm.org/route/v1/driving/${originPoint.lon},${originPoint.lat};${DELIVERY_DESTINATION.lon},${DELIVERY_DESTINATION.lat}?overview=false`);
+      const meters = Number(route?.routes?.[0]?.distance || 0);
+      if (meters > 0) return { miles:meters / 1609.344, source:'road route' };
+    } catch (_) {}
+    return { miles:straightLineMiles(originPoint, DELIVERY_DESTINATION) * 1.18, source:'estimated route' };
+  }
+  function deliveryVehicleType(vehicle) {
+    const title = String(vehicle.title || '').toLowerCase();
+    if (/\b(?:pickup|pick-up|truck|f-?150|f-?250|f-?350|silverado|sierra|tundra|tacoma|ram\s*\d)/i.test(title)) return 'pickup';
+    if (/\b(?:suv|sport utility|crossover|4runner|rav4|highlander|explorer|expedition|tahoe|suburban|yukon|cherokee|wrangler|bronco)\b/i.test(title)) return 'suv';
+    if (/\b(?:van|cargo van|sprinter|transit|promaster)\b/i.test(title)) return 'van';
+    return 'sedan';
+  }
+  function deliveryRunningStatus() {
+    const text = document.body?.innerText || '';
+    if (/\b(?:non[- ]?run(?:ner|ning)?|inoperable|inop|stationary|does not (?:run|start)|won't (?:run|start)|no start)\b/i.test(text))
+      return false;
+    return true;
+  }
+  function baseDeliveryPrice(miles) {
+    if (miles <= 50) return 175;
+    if (miles <= 100) return 225;
+    if (miles <= 250) return Math.max(225, miles * 1.30);
+    if (miles <= 500) return Math.max(325, miles * 1.05);
+    if (miles <= 750) return Math.max(525, miles * 0.90);
+    if (miles <= 1000) return Math.max(675, miles * 0.80);
+    if (miles <= 1500) return Math.max(800, miles * 0.68);
+    if (miles <= 2000) return Math.max(1020, miles * 0.60);
+    if (miles <= 2500) return Math.max(1200, miles * 0.55);
+    return Math.max(1375, miles * 0.50);
+  }
+  function calculateDeliveryEstimate(miles, type, isRunning) {
+    const multipliers = { sedan:1, suv:1.12, pickup:1.18, van:1.22 };
+    const sized = baseDeliveryPrice(miles) * (multipliers[type] || 1);
+    const nonRunningFee = isRunning ? 0 : Math.max(150, sized * 0.15);
+    return Math.ceil((sized + nonRunningFee + 50) / 25) * 25;
+  }
+  async function ensureAutoDelivery(vehicle) {
+    if (!vehicle?.vin || deliveryLookups.has(vehicle.vin)) return deliveryLookups.get(vehicle.vin);
+    const task = (async () => {
+      const origin = readDeliveryOrigin();
+      if (!origin) return null;
+      const signature = `${origin.zip}|${origin.label}|${location.href}`;
+      const current = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
+      if (current?.signature === signature && current.price) return current;
+      const point = await geocodeDeliveryOrigin(origin);
+      const route = await deliveryRoadMiles(point);
+      const type = deliveryVehicleType(vehicle);
+      const isRunning = deliveryRunningStatus();
+      const price = calculateDeliveryEstimate(route.miles, type, isRunning);
+      const estimate = {
+        price, miles:Math.round(route.miles), origin:point.label || origin.label || origin.zip,
+        originZip:point.zip || origin.zip || '', destinationZip:DELIVERY_DESTINATION.zip,
+        vehicleType:type, isRunning, routeSource:route.source, signature, calculatedAt:Date.now(),
+      };
+      GM_setValue(deliveryEstimateKey(vehicle.vin), estimate);
+      return estimate;
+    })().catch(() => null).finally(() => deliveryLookups.delete(vehicle.vin));
+    deliveryLookups.set(vehicle.vin, task);
+    return task;
+  }
   function readDealSettings(vin) {
     const global = GM_getValue(DEAL_SETTINGS_KEY, {}) || {};
     const vehicle = GM_getValue(`${DEAL_SETTINGS_KEY}:${vin}`, {}) || {};
+    const autoDelivery = GM_getValue(deliveryEstimateKey(vin), null) || {};
     return {
       feePercent: Number(global.feePercent ?? 6),
       targetProfit: Number(global.targetProfit ?? 2000),
-      delivery: Number(vehicle.delivery ?? 0),
+      delivery: Number(vehicle.deliveryManual ? vehicle.delivery : (autoDelivery.price ?? vehicle.delivery ?? 0)),
+      deliveryManual: Boolean(vehicle.deliveryManual),
       extra: Number(vehicle.extra ?? 0),
       purchasePrice: Number(vehicle.purchasePrice ?? 0),
     };
@@ -3900,6 +4091,7 @@
   }
   function dealMarkup(vin, values, carfax) {
     const config = readDealSettings(vin);
+    const deliveryEstimate = GM_getValue(deliveryEstimateKey(vin), null);
     const deal = calculateDeal(values, carfax, config);
     return `<details class="card deal-card" open><summary><span>Deal Calculator</span><span>Profit & purchase ▾</span></summary>
       <div class="deal-body">
@@ -3908,7 +4100,8 @@
         <div class="deal-inputs">
           <div class="deal-field"><label>Minimum profit</label><div class="input-wrap"><span>$</span><input data-deal="targetProfit" inputmode="numeric" value="${config.targetProfit || ''}"></div></div>
           <div class="deal-field"><label>Auction fee</label><div class="input-wrap"><input data-deal="feePercent" inputmode="decimal" value="${config.feePercent}"><span style="padding:0 9px 0 0">%</span></div></div>
-          <div class="deal-field"><label>Delivery</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="0"></div></div>
+          <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="Detecting…"></div>
+            <div class="delivery-note">${deliveryEstimate ? `${deliveryEstimate.origin}${deliveryEstimate.originZip ? ` ${deliveryEstimate.originZip}` : ''} · ~${number(deliveryEstimate.miles)} mi · ${deliveryEstimate.vehicleType}${deliveryEstimate.isRunning ? '' : ' · non-running'}` : 'Detecting auction location and route…'}</div></div>
           <div class="deal-field"><label>Additional costs</label><div class="input-wrap"><span>$</span><input data-deal="extra" inputmode="numeric" value="${config.extra || ''}" placeholder="0"></div></div>
         </div>
         <div class="deal-recommended"><div><div class="label">Recommended max buy</div><div style="font-size:10px;opacity:.8">Includes profit, fee and costs</div></div><div class="value">${money(deal?.recommendedBuy)}</div></div>
@@ -3928,7 +4121,10 @@
         } else {
           const key = `${DEAL_SETTINGS_KEY}:${vin}`;
           const vehicle = GM_getValue(key, {}) || {};
-          GM_setValue(key, { ...vehicle, [field]: value });
+          if (field === 'delivery') {
+            const raw = String(input.value || '').trim();
+            GM_setValue(key, { ...vehicle, delivery:value, deliveryManual:Boolean(raw) });
+          } else GM_setValue(key, { ...vehicle, [field]: value });
         }
         render();
       };
@@ -3942,7 +4138,9 @@
     const job = vehicle.vin ? GM_getValue(kbbJobKey(vehicle.vin), null) : null;
     const active = job?.vin === vehicle.vin && !job.completedAt;
     const values = result?.values || {};
-    const carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
+    const manualState = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+    let carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
+    if (vehicle.manual && Number(manualState.lookupStartedAt || 0) > Number(carfax?.completedAt || 0)) carfax = null;
     const carfaxJob = GM_getValue(CARFAX_JOB_KEY, null);
     const carfaxActive = carfaxJob?.vin === vehicle.vin && !carfaxJob.completedAt;
     const carfaxClean = carfax && (carfax.accidentType === 'clean' || carfax.accidents === 0);
@@ -3951,22 +4149,56 @@
     const conditions = [['fair','Fair'],['good','Good'],['very-good','Very Good'],['excellent','Excellent']];
     const target = document.getElementById('ove-kbb-content');
     if (!vehicle.vin || !vehicle.mileage) {
+      const manualTitle = carfax?.title || vehicle.title;
+      const mileageError = /mileage/i.test(message);
       target.innerHTML = `<div class="manual"><div class="manual-title">Manual vehicle lookup</div>
         <div class="manual-help">Enter a VIN and mileage when the auction page cannot provide them.</div>
         <input id="ove-manual-vin" maxlength="17" autocomplete="off" placeholder="17-digit VIN" value="${vehicle.vin || ''}">
-        <input id="ove-manual-mileage" class="manual-mileage" inputmode="numeric" autocomplete="off" placeholder="Mileage" value="${vehicle.mileage || ''}">
+        <input id="ove-manual-mileage" class="manual-mileage${mileageError ? ' is-error' : ''}" inputmode="numeric" autocomplete="off" placeholder="Mileage" value="${vehicle.mileage || ''}">
+        <div class="lookup-actions"><button id="ove-manual-carfax">CARFAX</button><button id="ove-manual-kbb">KBB</button></div>
         <button id="ove-manual-run">Check VIN</button>
-        ${message ? `<div class="muted" style="margin-top:8px">${message}</div>` : ''}</div>`;
-      document.getElementById('ove-manual-run').onclick = () => {
+        ${message ? `<div class="${mileageError ? 'lookup-error' : 'muted'}" style="margin-top:8px">${message}</div>` : ''}</div>
+        ${vehicle.vin && (carfax || carfaxActive) ? `<div class="vehicle-head" style="margin-top:13px"><div class="vehicle">${manualTitle || 'Manual VIN lookup'}</div></div>
+          <div class="muted">${vehicle.vin}</div>
+          <div class="card carfax">
+            <div class="carfax-head"><div class="carfax-logo" aria-label="CARFAX">${[...'CARFAX'].map(letter => `<b>${letter}</b>`).join('')}</div>
+              ${carfax?.reportUrl ? `<a href="${carfax.reportUrl}" target="_blank" rel="noopener">View Report ↗</a>` : '<span class="muted">Vehicle History</span>'}</div>
+            ${carfax ? `<div class="carfax-metrics">
+              <div class="carfax-metric carfax-retail"><div class="label">Retail Value</div><div class="value">${money(carfax.retailValue)}</div></div>
+              <div class="carfax-metric"><div class="label">${carfaxClean ? 'No Accidents or Damage' : 'Accident'}</div><div class="carfax-icon">${accidentIcon(carfax)}</div></div>
+              <div class="carfax-metric"><div class="label">${carfax.owners != null ? `${carfax.owners} Owner${carfax.owners === 1 ? '' : 's'}` : 'Owners'}</div><div class="carfax-icon">${ownerIcon(carfax)}</div></div>
+            </div>` : `<div class="carfax-status">${carfaxJob?.stage || 'Generating CARFAX report'}</div>`}
+          </div>` : ''}`;
+      const saveManualVehicle = (requireMileage, mode) => {
         const vin = document.getElementById('ove-manual-vin').value.trim().toUpperCase();
         const mileage = Number(document.getElementById('ove-manual-mileage').value.replace(/[^\d]/g, ''));
-        if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { render('Enter a valid 17-character VIN.'); return; }
-        if (!mileage) { render('Enter the vehicle mileage.'); return; }
+        if (!/^[A-HJ-NPR-Z0-9]{17}$/.test(vin)) { render('Enter a valid 17-character VIN.'); return null; }
+        const previous = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+        const lookupStartedAt = previous.vin === vin ? Number(previous.lookupStartedAt || 0) : 0;
         GM_setValue(MANUAL_VEHICLE_KEY, {
-          vin, mileage, pageUrl:location.href,
-          pageInstanceId:PAGE_INSTANCE_ID, savedAt:Date.now()
+          vin, mileage, title:previous.vin === vin ? previous.title || '' : '', pageUrl:location.href,
+          pageInstanceId:PAGE_INSTANCE_ID, lookupStartedAt, savedAt:Date.now()
         });
-        render(); run();
+        if (requireMileage && !mileage) { render('Please enter the mileage.'); return null; }
+        return readVehicle();
+      };
+      document.getElementById('ove-manual-carfax').onclick = () => {
+        const selected = saveManualVehicle(false, 'carfax');
+        if (!selected) return;
+        render('Starting CARFAX…');
+        run('carfax');
+      };
+      document.getElementById('ove-manual-kbb').onclick = () => {
+        const selected = saveManualVehicle(true, 'kbb');
+        if (!selected) return;
+        render();
+        run('kbb');
+      };
+      document.getElementById('ove-manual-run').onclick = () => {
+        const selected = saveManualVehicle(true, 'both');
+        if (!selected) return;
+        render();
+        run('both');
       };
       return;
     }
@@ -3990,7 +4222,8 @@
         ${!carfax ? `<div class="carfax-status">${carfaxJob?.vin === vehicle.vin ? (carfaxJob.stage || 'Report pending') : 'Report pending'}</div>` : ''}
       </div>
       ${dealMarkup(vehicle.vin, values, carfax)}
-      <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Get KBB + CARFAX'}</button>
+      <div class="lookup-actions"><button id="ove-carfax-run">CARFAX</button><button id="ove-kbb-only-run">KBB</button></div>
+      <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Check VIN'}</button>
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
         `Color: ${vehicle.color} · ZIP: ${config.zip}`)}</div>`;
@@ -4000,8 +4233,15 @@
       saveButton.title = sheetSaved ? `Saved in Manheim v2 · row ${sheetSaved.row || ''}` : 'Save vehicle to Manheim v2';
       saveButton.onclick = () => saveCurrentVehicle();
     }
-    document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run(); };
+    document.getElementById('ove-carfax-run').onclick = (event) => { event.preventDefault(); run('carfax'); };
+    document.getElementById('ove-kbb-only-run').onclick = (event) => { event.preventDefault(); run('kbb'); };
+    document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run('both'); };
     bindDealInputs(vehicle.vin);
+    if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)) {
+      ensureAutoDelivery(vehicle).then((estimate) => {
+        if (estimate && readVehicle().vin === vehicle.vin) render('Delivery estimated automatically.');
+      });
+    }
   }
   function carfaxRequest(method, url, data) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
@@ -4012,7 +4252,74 @@
       ontimeout: () => reject(new Error('CARFAX request timed out')),
     }));
   }
+  function validSavedCarfax(value, vin) {
+    return value && String(value.vin || vin).toUpperCase() === vin &&
+      /^https:\/\/carfax-app\.vercel\.app\/pro\/report\/[^/?#]+/i.test(value.reportUrl || '');
+  }
+  function carfaxHistoryRecords(payload) {
+    const roots = [
+      payload?.requests, payload?.items, payload?.results,
+      payload?.data?.requests, payload?.data?.items, payload?.data?.results, payload?.data,
+    ];
+    return roots.flatMap((value) => Array.isArray(value) ? value : []).filter(Boolean);
+  }
+  async function findSavedCarfax(vehicle) {
+    const vin = vehicle.vin.toUpperCase();
+    const local = GM_getValue(`oveCarfaxResult:${vin}`, null);
+    if (validSavedCarfax(local, vin)) return { ...local, vin, savedSource:'this browser' };
+    try {
+      const { results } = await readSharedResults();
+      const shared = results?.[vin]?.carfax;
+      if (validSavedCarfax(shared, vin)) {
+        const saved = { ...shared, vin, sharedUpdatedAt:results[vin].updatedAt, savedSource:'shared history' };
+        GM_setValue(`oveCarfaxResult:${vin}`, saved);
+        return saved;
+      }
+    } catch (_) {}
+    try {
+      const response = await carfaxRequest('GET', 'https://carfax-app.vercel.app/api/pro/requests');
+      if (response.status >= 200 && response.status < 300) {
+        let payload = {}; try { payload = JSON.parse(response.responseText || '{}'); } catch (_) {}
+        const match = carfaxHistoryRecords(payload).find((record) => {
+          const recordVin = record?.vin || record?.vehicle?.vin || record?.request?.vin;
+          return String(recordVin || '').toUpperCase() === vin;
+        });
+        if (match) {
+          const requestId = match.id || match.requestId || match.request?.id;
+          const reportUrl = match.reportUrl || match.url ||
+            (requestId ? `https://carfax-app.vercel.app/pro/report/${requestId}` : '');
+          if (/^https:\/\/carfax-app\.vercel\.app\/pro\/report\/[^/?#]+/i.test(reportUrl)) {
+            const saved = {
+              ...local, vin, title:local?.title || match.title || match.vehicleTitle || vehicle.title || '',
+              reportUrl, requestId, completedAt:Number(local?.completedAt || Date.now()),
+              savedSource:'CARFAX history',
+            };
+            GM_setValue(`oveCarfaxResult:${vin}`, saved);
+            publishSharedResult(vin, vehicle);
+            return saved;
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  }
+  function openSavedCarfax(saved) {
+    if (!saved?.reportUrl) return;
+    window.open(saved.reportUrl, '_blank', 'noopener');
+  }
   async function startCarfax(vehicle) {
+    const saved = await findSavedCarfax(vehicle);
+    if (saved) {
+      const manual = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+      if (String(manual.vin || '').toUpperCase() === vehicle.vin)
+        GM_setValue(MANUAL_VEHICLE_KEY, { ...manual, lookupStartedAt:0, savedAt:Date.now() });
+      render(`Saved CARFAX opened from ${saved.savedSource || 'history'} — no report used.`);
+      openSavedCarfax(saved);
+      return { reused:true, saved };
+    }
+    const manual = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
+    if (String(manual.vin || '').toUpperCase() === vehicle.vin)
+      GM_setValue(MANUAL_VEHICLE_KEY, { ...manual, lookupStartedAt:Date.now(), savedAt:Date.now() });
     GM_setValue(`oveCarfaxResult:${vehicle.vin}`, null);
     GM_setValue(CARFAX_JOB_KEY, { ...vehicle, vin: vehicle.vin, startedAt: Date.now(), stage: 'Opening CARFAX' });
     try {
@@ -4055,6 +4362,7 @@
     } catch (error) {
       const pending = GM_getValue(CARFAX_JOB_KEY, {}) || {};
       GM_setValue(CARFAX_JOB_KEY, { ...pending, stage: error.message, error: error.message, completedAt: Date.now() });
+      return { reused:false, error:error.message };
     }
   }
   function savePartial(vehicle, config, state) {
@@ -4101,15 +4409,33 @@
     }
     throw new Error('Timed out waiting for local KBB Bridge');
   }
-  async function run() {
-    if (Date.now() - lastRun < 1500) return; lastRun = Date.now();
+  async function run(mode = 'both') {
     const vehicle = readVehicle(); const config = settings();
-    if (!vehicle.vin || !vehicle.mileage) { render('Could not read VIN or mileage.'); return; }
+    if (!vehicle.vin) { render('Enter a valid 17-character VIN.'); return; }
+    if (mode !== 'carfax' && !vehicle.mileage) { render('Please enter the mileage.'); return; }
+    if (mode === 'carfax') {
+      const currentCarfax = GM_getValue(CARFAX_JOB_KEY, null);
+      if (currentCarfax?.vin === vehicle.vin && !currentCarfax.completedAt) {
+        render(currentCarfax.stage || 'CARFAX is already running…');
+        return;
+      }
+      render('Starting CARFAX…');
+      const outcome = await startCarfax(vehicle);
+      if (outcome?.reused)
+        render(`Saved CARFAX opened from ${outcome.saved?.savedSource || 'history'} — no report used.`);
+      else render(outcome?.error || '');
+      return;
+    }
+    const currentKbb = GM_getValue(kbbJobKey(vehicle.vin), null);
+    if (currentKbb?.vin === vehicle.vin && !currentKbb.completedAt) {
+      render(currentKbb.stage || 'KBB is already running…');
+      return;
+    }
     GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, null);
-    GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Adding to shared KBB queue', progress:2, startedAt:Date.now() });
+    GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Checking local KBB Bridge', progress:2, startedAt:Date.now() });
     render();
     try {
-      startCarfax(vehicle);
+      if (mode === 'both') startCarfax(vehicle);
       try {
         await bridge('GET');
         await runLocalKbb(vehicle, config);
