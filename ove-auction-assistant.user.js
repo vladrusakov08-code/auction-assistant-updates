@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.3.3
+// @version      2.3.4
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -1430,7 +1430,14 @@
                 );
             });
 
-        document
+        // Manheim result pages can contain hundreds of vehicles and tens of
+        // thousands of DOM nodes. The detail links above already provide the
+        // VIN and card, so a full-page text scan here only freezes navigation.
+        const shouldScanAllText =
+            SITE !== 'manheim' ||
+            location.hash.includes('/details/');
+
+        if (shouldScanAllText) document
             .querySelectorAll('body *')
             .forEach(element => {
                 if (
@@ -3016,7 +3023,7 @@
             mutationTimer =
                 setTimeout(
                     paintSeenVins,
-                    700
+                    SITE === 'manheim' ? 1400 : 700
                 );
         });
 
@@ -3040,7 +3047,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.3.3';
+  const SCRIPT_VERSION = '2.3.4';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
