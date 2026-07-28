@@ -1,6 +1,6 @@
 {
-  "version": "2.5.3",
+  "version": "2.5.4",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-27T22:39:00-07:00",
-  "notes": "Force CARFAX into a fresh compact upper-right popup and use the local bridge to return macOS focus to the auction immediately"
+  "releasedAt": "2026-07-27T22:50:00-07:00",
+  "notes": "Restore the reliable active CARFAX tab for fullscreen, return as soon as the final price stabilizes, place GET VALUE in the Retail Value field, and keep KBB independent"
 }
