@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.6.0
+// @version      2.6.1
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.6.0';
+  const SCRIPT_VERSION = '2.6.1';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4103,15 +4103,18 @@
     const text = document.body?.innerText || '';
     const html = document.documentElement?.innerHTML || '';
     let labeledZip = text.match(/(?:Pickup|Vehicle Location|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,180}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] ||
-      html.match(/"(?:postalCode|zipCode|zip)"\s*:\s*"(\d{5})(?:-\d{4})?"/i)?.[1] || '';
+      html.match(/["'](?:postalCode|postal_code|zipCode|zip_code|zip)["']\s*:\s*["']?(\d{5})(?:-\d{4})?/i)?.[1] ||
+      html.match(/(?:postalCode|postal_code|zipCode|zip_code|zip)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")?(\d{5})(?:-\d{4})?/i)?.[1] || '';
     const mapLink = [...document.querySelectorAll('a[href*="google.com/maps"],a[href*="maps.google"],a[href*="maps.apple"]')]
       .find((link) => /direction|map|location|pickup|auction/i.test(`${link.textContent || ''} ${link.href}`));
     if (!labeledZip && mapLink) labeledZip = `${mapLink.textContent || ''} ${mapLink.href}`.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] || '';
     const pickup = text.match(/(?:^|\n)\s*(?:Pickup|Vehicle Location|Located at)\s*:?\s*([^\n]{3,100})/im)?.[1]?.trim();
     const auctionLocation = text.match(/(?:Auction Location|Branch|Yard|Facility|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim();
+    const embeddedLocation = html.match(/["'](?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
+      html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")([^"'&{}]{3,100})/i)?.[1]?.trim();
     const copartLocation = AUCTION_SITE === 'COPART'
       ? text.match(/(?:Location|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim() : '';
-    let label = pickup || auctionLocation || copartLocation || mapLink?.textContent?.trim() || '';
+    let label = pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
     if (!label) {
       try {
         const pageUrl = new URL(location.href);
@@ -4251,7 +4254,7 @@
     if (!vehicle?.vin || deliveryLookups.has(vehicle.vin)) return deliveryLookups.get(vehicle.vin);
     const task = (async () => {
       const origin = readDeliveryOrigin();
-      if (!origin) return null;
+      if (!origin) throw new Error('OVE did not provide an auction ZIP — enter delivery manually');
       const signature = `${DELIVERY_RATE_VERSION}|${origin.zip}|${origin.label}|${location.href}`;
       const current = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
       if (current?.signature === signature && current.price) return current;
@@ -4517,9 +4520,11 @@
     bindCarfaxCaptchaButton();
     bindCarfaxValueButton(vehicle, config.zip);
     bindDealInputs(vehicle.vin);
-    if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)?.price) {
+    if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)) {
       ensureAutoDelivery(vehicle).then((estimate) => {
-        if (estimate && readVehicle().vin === vehicle.vin) render('Delivery estimated automatically.');
+        if (readVehicle().vin === vehicle.vin) {
+          render(estimate ? 'Delivery estimated automatically.' : 'Auction location is unavailable; delivery can be entered manually.');
+        }
       });
     }
   }
