@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.5.1
+// @version      2.5.2
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.5.1';
+  const SCRIPT_VERSION = '2.5.2';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4530,17 +4530,24 @@
       carfaxValueUrl.searchParams.set('oveVin', vin);
       carfaxValueUrl.searchParams.set('oveZip', zip);
       carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
+      const popupWidth = 520;
+      const popupHeight = Math.min(900, Math.max(700, screen.availHeight - 80));
+      const popupLeft = screen.availLeft + screen.availWidth - popupWidth - 12;
+      const popupTop = screen.availTop + 35;
       const popup = window.open(
         carfaxValueUrl.href,
         'oveCarfaxValueWindow',
-        'popup=yes,width=560,height=900,left=20,top=40,resizable=yes,scrollbars=yes'
+        `popup=yes,width=${popupWidth},height=${popupHeight},left=${popupLeft},top=${popupTop},resizable=yes,scrollbars=yes`
       );
       if (!popup) throw new Error('Chrome blocked the CARFAX popup');
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
         ...job, stage:'CARFAX is working in the separate Chrome window',
         popupName:'oveCarfaxValueWindow',
       });
-      setTimeout(() => window.focus(), 250);
+      try { popup.blur(); window.focus(); } catch (_) {}
+      [120, 300, 700].forEach((delay) => setTimeout(() => {
+        try { popup.blur(); window.focus(); } catch (_) {}
+      }, delay));
       return { source:'separate Chrome window' };
     } catch (error) {
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
