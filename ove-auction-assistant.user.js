@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.5.3
+// @version      2.5.4
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.5.3';
+  const SCRIPT_VERSION = '2.5.4';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3155,7 +3155,7 @@
           });
           return;
         }
-        if (Date.now() - retailStableSince < 2100) return;
+        if (Date.now() - retailStableSince < 800) return;
         GM_setValue(carfaxValueKey(job.vin), result);
         GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, ...result, stage:'CARFAX Retail Value ready', completedAt:Date.now() });
         setTimeout(() => window.close(), 500);
@@ -3859,6 +3859,8 @@
       #ove-kbb-panel .carfax-icon img{display:block;max-width:38px;max-height:25px;object-fit:contain}
       #ove-kbb-panel .carfax-icon svg{display:block;width:25px;height:25px}#ove-kbb-panel .carfax-metric .value{font-size:15px}
       #ove-kbb-panel .carfax-retail .value{color:#187339;font-size:18px}
+      #ove-kbb-panel .carfax-value-button{border:0;background:transparent;color:#187339;font-size:16px;
+        font-weight:850;cursor:pointer;padding:5px 4px;text-decoration:underline;text-underline-offset:3px}
       #ove-kbb-panel .carfax-status{padding:0 13px 11px;text-align:center;font-size:12px;color:#8da0bc}
       #ove-kbb-panel .carfax-captcha-open{border:0;background:none;color:#1765c1;font:inherit;font-weight:800;
         text-decoration:underline;cursor:pointer;padding:2px}
@@ -4304,6 +4306,15 @@
       };
     });
   }
+  function bindCarfaxValueButton(vehicle, zip) {
+    document.querySelectorAll('#ove-kbb-content .carfax-value-button').forEach((button) => {
+      button.onclick = async (event) => {
+        event.preventDefault();
+        button.textContent = 'OPENING…';
+        await startCarfaxValue(vehicle, zip, true);
+      };
+    });
+  }
   function render(message = '') {
     makePanel();
     const vehicle = readVehicle(); const config = settings();
@@ -4344,7 +4355,7 @@
             <div class="carfax-head"><div class="carfax-logo" aria-label="CARFAX">${[...'CARFAX'].map(letter => `<b>${letter}</b>`).join('')}</div>
               ${carfax?.reportUrl ? `<a href="${carfax.reportUrl}" target="_blank" rel="noopener">View Report ↗</a>` : '<span class="muted">Vehicle History</span>'}</div>
             <div class="carfax-metrics">
-              <div class="carfax-metric carfax-retail"><div class="label">Retail Value</div><div class="value">${money(carfaxRetail)}</div></div>
+              <div class="carfax-metric carfax-retail"><div class="label">Retail Value</div><button class="carfax-value-button">${carfaxRetail ? money(carfaxRetail) : 'GET VALUE'}</button></div>
               <div class="carfax-metric"><div class="label">${carfax ? (carfaxClean ? 'No Accidents or Damage' : 'Accident') : 'Accidents / Damage'}</div>${carfax ? `<div class="carfax-icon">${accidentIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
               <div class="carfax-metric"><div class="label">${carfax?.owners != null ? `${carfax.owners} Owner${carfax.owners === 1 ? '' : 's'}` : 'Owners'}</div>${carfax ? `<div class="carfax-icon">${ownerIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
             </div>
@@ -4383,6 +4394,7 @@
         run('both');
       };
       bindCarfaxCaptchaButton();
+      bindCarfaxValueButton(readVehicle(), config.zip);
       return;
     }
     target.innerHTML = `<div class="vehicle-head"><div class="vehicle">${vehicle.title}</div><button id="ove-save-vehicle" title="Save vehicle to Manheim v2">${sheetSaved ? '♥' : '♡'}</button></div><div class="muted">${vehicle.vin}</div>
@@ -4398,7 +4410,7 @@
         <div class="carfax-head"><div class="carfax-logo" aria-label="CARFAX">${[...'CARFAX'].map(letter => `<b>${letter}</b>`).join('')}</div>
           ${carfax?.reportUrl ? `<a href="${carfax.reportUrl}" target="_blank" rel="noopener">View Report ↗</a>` : '<span class="muted">Vehicle History</span>'}</div>
         <div class="carfax-metrics">
-          <div class="carfax-metric carfax-retail"><div class="label">Retail Value</div><div class="value">${money(carfaxRetail)}</div></div>
+          <div class="carfax-metric carfax-retail"><div class="label">Retail Value</div><button class="carfax-value-button">${carfaxRetail ? money(carfaxRetail) : 'GET VALUE'}</button></div>
           <div class="carfax-metric"><div class="label">${carfax ? carfaxAccidentLabel : 'Accidents / Damage'}</div>${carfax ? `<div class="carfax-icon">${accidentIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
           <div class="carfax-metric"><div class="label">${carfax?.owners != null ? `${carfax.owners} Owner${carfax.owners === 1 ? '' : 's'}` : 'Owners'}</div>${carfax ? `<div class="carfax-icon">${ownerIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
         </div>
@@ -4408,7 +4420,6 @@
       </div>
       ${dealMarkup(vehicle.vin, values, effectiveCarfax)}
       <div class="lookup-actions"><button id="ove-carfax-run">CARFAX</button><button id="ove-kbb-only-run">KBB</button></div>
-      <button id="ove-carfax-value-test" style="width:100%;height:36px;margin-top:8px;background:#0f766e;color:#fff;font-weight:800">CARFAX VALUE TEST</button>
       <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Check VIN'}</button>
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
@@ -4421,17 +4432,9 @@
     }
     document.getElementById('ove-carfax-run').onclick = (event) => { event.preventDefault(); run('carfax'); };
     document.getElementById('ove-kbb-only-run').onclick = (event) => { event.preventDefault(); run('kbb'); };
-    document.getElementById('ove-carfax-value-test').onclick = async (event) => {
-      event.preventDefault();
-      GM_setValue(CARFAX_VALUE_JOB_KEY, {
-        ...vehicle, vin:vehicle.vin, zip:config.zip,
-        startedAt:Date.now(), stage:'Starting CARFAX Value test',
-      });
-      render();
-      await startCarfaxValue(vehicle, config.zip, true);
-    };
     document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run('both'); };
     bindCarfaxCaptchaButton();
+    bindCarfaxValueButton(vehicle, config.zip);
     bindDealInputs(vehicle.vin);
     if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)) {
       ensureAutoDelivery(vehicle).then((estimate) => {
@@ -4537,36 +4540,12 @@
       carfaxValueUrl.searchParams.set('oveVin', vin);
       carfaxValueUrl.searchParams.set('oveZip', zip);
       carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
-      const popupName = `oveCarfaxValueWindow_${Date.now()}`;
-      carfaxValueUrl.searchParams.set('ovePopupName', popupName);
-      const popupWidth = 520;
-      const popupHeight = Math.min(900, Math.max(700, screen.availHeight - 80));
-      const popupLeft = screen.availLeft + screen.availWidth - popupWidth - 12;
-      const popupTop = screen.availTop + 35;
-      const popup = window.open(
-        'about:blank',
-        popupName,
-        `popup=yes,width=${popupWidth},height=${popupHeight},left=${popupLeft},top=${popupTop},resizable=yes,scrollbars=yes`
-      );
-      if (!popup) throw new Error('Chrome blocked the CARFAX popup');
-      try {
-        popup.resizeTo(popupWidth, popupHeight);
-        popup.moveTo(popupLeft, popupTop);
-        popup.location.replace(carfaxValueUrl.href);
-      } catch (_) {
-        popup.location.href = carfaxValueUrl.href;
-      }
+      const carfaxTab = window.open(carfaxValueUrl.href, '_blank');
+      if (!carfaxTab) throw new Error('Chrome blocked the CARFAX tab');
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
-        ...job, stage:'CARFAX is working in the separate Chrome window',
-        popupName,
+        ...job, stage:'Getting CARFAX Retail Value',
       });
-      try { popup.blur(); window.focus(); } catch (_) {}
-      focusAuctionWindow();
-      [120, 300, 700, 1200].forEach((delay) => setTimeout(() => {
-        try { popup.blur(); window.focus(); } catch (_) {}
-        focusAuctionWindow();
-      }, delay));
-      return { source:'separate Chrome window' };
+      return { source:'active CARFAX tab' };
     } catch (error) {
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
         ...job, stage:error.message || 'CARFAX window failed',
@@ -4705,12 +4684,6 @@
     render();
     try {
       if (mode === 'both') startCarfax(vehicle);
-      if (mode === 'kbb') {
-        startCarfaxValue(vehicle, config.zip).then(() => {
-          publishSharedResult(vehicle.vin, vehicle);
-          if (readVehicle().vin === vehicle.vin) render();
-        });
-      }
       try {
         await bridge('GET');
         await runLocalKbb(vehicle, config);
