@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.3.6
+// @version      2.3.7
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.3.6';
+  const SCRIPT_VERSION = '2.3.7';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4435,7 +4435,7 @@
     } catch (_) {}
     const active = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
     if (active?.vin === vin && !active.completedAt &&
-        Date.now() - Number(active.startedAt || 0) < 3 * 60 * 1000) return { source:'active' };
+        Date.now() - Number(active.startedAt || 0) < 45000) return { source:'active' };
     const waitMs = Math.max(0, CARFAX_VALUE_MIN_INTERVAL_MS -
       (Date.now() - Number(GM_getValue(CARFAX_VALUE_LAST_LOOKUP_KEY, 0) || 0)));
     if (waitMs) await sleep(waitMs);
