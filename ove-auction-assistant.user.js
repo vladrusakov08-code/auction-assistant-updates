@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.4.0
+// @version      2.4.1
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3050,7 +3050,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.4.0';
+  const SCRIPT_VERSION = '2.4.1';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3100,7 +3100,7 @@
     return {
       vin, zip:job.zip, title:heading,
       retailValue:Number(retail.replace(/,/g, '')),
-      records, source:'CARFAX Value', fetchedAt:Date.now(),
+      records, source:'CARFAX Value', captureMode:'stable-v1', fetchedAt:Date.now(),
     };
   }
 
@@ -3116,6 +3116,8 @@
     const started = Date.now();
     let submitted = false;
     let formPreparedAt = 0;
+    let lastRetailValue = 0;
+    let retailStableSince = 0;
     const tick = () => {
       const params = new URLSearchParams(location.search);
       const queryVin = String(params.get('oveVin') || '').toUpperCase();
@@ -3141,6 +3143,15 @@
       }
       const result = publicCarfaxValueFromPage(job);
       if (result) {
+        if (result.retailValue !== lastRetailValue) {
+          lastRetailValue = result.retailValue;
+          retailStableSince = Date.now();
+          GM_setValue(CARFAX_VALUE_JOB_KEY, {
+            ...job, stage:`Waiting for final CARFAX value · $${result.retailValue.toLocaleString('en-US')}`,
+          });
+          return;
+        }
+        if (Date.now() - retailStableSince < 2100) return;
         GM_setValue(carfaxValueKey(job.vin), result);
         GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, ...result, stage:'CARFAX Retail Value ready', completedAt:Date.now() });
         setTimeout(() => window.close(), 500);
@@ -3153,7 +3164,7 @@
       if (!vinInput || !zipInput || !button) return;
       // Next.js can replace the form controls once during hydration. Wait for
       // the client app, then restore the values if hydration cleared them.
-      if (Date.now() - started < 2500) return;
+      if (Date.now() - started < 1200) return;
       if (!formPreparedAt || vinInput.value !== job.vin || zipInput.value !== job.zip) {
         setPublicCarfaxInput(vinInput, job.vin);
         setPublicCarfaxInput(zipInput, job.zip);
@@ -3161,7 +3172,7 @@
         GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, stage:'CARFAX is validating the VIN' });
         return;
       }
-      if (submitted || Date.now() - formPreparedAt < 2000) return;
+      if (submitted || Date.now() - formPreparedAt < 1000) return;
       if (button.disabled) {
         if (Date.now() - formPreparedAt > 10000) {
           GM_setValue(CARFAX_VALUE_JOB_KEY, {
@@ -4261,7 +4272,8 @@
     const manualState = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
     let carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
     if (vehicle.manual && Number(manualState.lookupStartedAt || 0) > Number(carfax?.completedAt || 0)) carfax = null;
-    const carfaxValue = GM_getValue(carfaxValueKey(vehicle.vin), null);
+    const savedCarfaxValue = GM_getValue(carfaxValueKey(vehicle.vin), null);
+    const carfaxValue = savedCarfaxValue?.captureMode === 'stable-v1' ? savedCarfaxValue : null;
     const carfaxRetail = Number(carfax?.retailValue || carfaxValue?.retailValue || 0) || null;
     const effectiveCarfax = { ...(carfax || {}), retailValue:carfaxRetail };
     const carfaxJob = GM_getValue(CARFAX_JOB_KEY, null);
@@ -4353,7 +4365,7 @@
       </div>
       ${dealMarkup(vehicle.vin, values, effectiveCarfax)}
       <div class="lookup-actions"><button id="ove-carfax-run">CARFAX</button><button id="ove-kbb-only-run">KBB</button></div>
-      <button id="ove-carfax-value-test" style="margin-top:8px;background:#0f766e">CARFAX VALUE TEST</button>
+      <button id="ove-carfax-value-test" style="width:100%;height:36px;margin-top:8px;background:#0f766e;color:#fff;font-weight:800">CARFAX VALUE TEST</button>
       <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Check VIN'}</button>
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
@@ -4451,7 +4463,8 @@
     const vin = vehicle.vin.toUpperCase();
     const fullReport = GM_getValue(`oveCarfaxResult:${vin}`, null);
     if (!force && Number(fullReport?.retailValue || 0) > 0) return { source:'report', value:fullReport };
-    const fresh = (value) => value && value.zip === zip && Number(value.retailValue || 0) > 0 &&
+    const fresh = (value) => value && value.captureMode === 'stable-v1' &&
+      value.zip === zip && Number(value.retailValue || 0) > 0 &&
       Date.now() - Number(value.fetchedAt || 0) < CARFAX_VALUE_CACHE_MS;
     const local = GM_getValue(carfaxValueKey(vin), null);
     if (!force && fresh(local)) return { source:'cache', value:local };
