@@ -1,6 +1,6 @@
 {
-  "version": "2.5.0",
+  "version": "2.5.1",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-27T22:08:00-07:00",
-  "notes": "Use a separate persistent CARFAX browser bridge, wait for the final animated price, cache results, and show a clickable CAPTCHA action"
+  "releasedAt": "2026-07-27T22:24:00-07:00",
+  "notes": "Use a separate window from the user's regular Chrome for CARFAX Value, preserve final-price stabilization, and avoid the detected automated-browser session"
 }
