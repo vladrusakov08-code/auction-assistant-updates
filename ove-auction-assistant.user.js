@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.6.1
+// @version      2.6.2
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.6.1';
+  const SCRIPT_VERSION = '2.6.2';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4241,6 +4241,17 @@
       [14999.99,225],[19999.99,275],[Infinity,350],
     ]);
   }
+  function isManheimSimulcast() {
+    const page = `${location.href} ${document.body?.innerText || ''}`;
+    return /(?:\/Simulcast\b|Simulcast Live|Enter Sale|Lane\/Run|Proxy Bid)/i.test(page);
+  }
+  function manheimStandardBuyerFee(price) {
+    const base = feeFromTable(price, [
+      [5000,450],[15000,650],[30000,900],
+      [Infinity,Math.max(900, price * 0.04)],
+    ]);
+    return base + 50;
+  }
   function automaticAuctionFee(price) {
     const bid = Math.max(0, Number(price) || 0);
     if (!bid) return 0;
@@ -4248,7 +4259,7 @@
       return Math.round((copartBuyerFee(bid, copartTitleIsClean()) +
         copartVirtualBidFee(bid) + 79 + 15) * 100) / 100;
     }
-    return manheimMarketplaceFee(bid);
+    return isManheimSimulcast() ? manheimStandardBuyerFee(bid) : manheimMarketplaceFee(bid);
   }
   async function ensureAutoDelivery(vehicle) {
     if (!vehicle?.vin || deliveryLookups.has(vehicle.vin)) return deliveryLookups.get(vehicle.vin);
@@ -4301,12 +4312,19 @@
     const saleAverage = (saleMax + saleMin) / 2;
     const priceWithProfitGap = saleMin - config.targetProfit;
     const availableBeforeFee = priceWithProfitGap - config.delivery - config.extra;
-    let recommendedBuy = Math.max(0, availableBeforeFee);
-    let recommendedFee = config.feeManual ? config.fee : 0;
-    for (let pass = 0; pass < 5; pass += 1) {
-      recommendedFee = config.feeManual ? config.fee : automaticAuctionFee(recommendedBuy);
-      recommendedBuy = Math.max(0, availableBeforeFee - recommendedFee);
+    let recommendedBuy;
+    if (config.feeManual) {
+      recommendedBuy = Math.max(0, availableBeforeFee - config.fee);
+    } else {
+      let low = 0; let high = Math.max(0, availableBeforeFee);
+      for (let pass = 0; pass < 32; pass += 1) {
+        const candidate = (low + high) / 2;
+        if (candidate + automaticAuctionFee(candidate) <= availableBeforeFee) low = candidate;
+        else high = candidate;
+      }
+      recommendedBuy = Math.floor(low);
     }
+    const recommendedFee = config.feeManual ? config.fee : automaticAuctionFee(recommendedBuy);
     const purchase = config.purchasePrice;
     const fee = config.feeManual ? config.fee : automaticAuctionFee(purchase || recommendedBuy);
     const profitMax = purchase > 0 ? saleMax - fee - config.delivery - config.extra - purchase : null;
@@ -4330,7 +4348,7 @@
         <div class="deal-three">${dealStat('Max sale', deal?.saleMax)}${dealStat('Average', deal?.saleAverage)}${dealStat('Min sale', deal?.saleMin)}</div>
         <div class="deal-inputs">
           <div class="deal-field"><label>Minimum profit</label><div class="input-wrap"><span>$</span><input data-deal="targetProfit" inputmode="numeric" value="${config.targetProfit || ''}"></div></div>
-          <div class="deal-field"><label>Auction fee · ${config.feeManual ? 'Manual' : `Auto ${AUCTION_SITE}`}</label><div class="input-wrap"><span>$</span><input data-deal="fee" inputmode="numeric" value="${deal ? Math.round(deal.fee) : (config.feeManual ? config.fee : '')}" placeholder="Auto"></div></div>
+          <div class="deal-field"><label>Auction fee · ${config.feeManual ? 'Manual' : `Est. ${AUCTION_SITE}${isManheimSimulcast() ? ' Simulcast' : ''}`}</label><div class="input-wrap"><span>$</span><input data-deal="fee" inputmode="numeric" value="${deal ? Math.round(deal.fee) : (config.feeManual ? config.fee : '')}" placeholder="Auto"></div></div>
           <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="Detecting…"></div>
             <div class="delivery-note">${deliveryEstimate?.price ? `${deliveryEstimate.origin}${deliveryEstimate.originZip ? ` ${deliveryEstimate.originZip}` : ''} · ~${number(deliveryEstimate.miles)} mi · ${deliveryEstimate.vehicleType}${deliveryEstimate.isRunning ? '' : ' · non-running'}` : (deliveryEstimate?.error || 'Detecting auction location and route…')}</div></div>
           <div class="deal-field"><label>Additional costs</label><div class="input-wrap"><span>$</span><input data-deal="extra" inputmode="numeric" value="${config.extra || ''}" placeholder="0"></div></div>
