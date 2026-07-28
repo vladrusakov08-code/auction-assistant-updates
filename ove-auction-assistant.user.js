@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.5.2
+// @version      2.5.3
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.5.2';
+  const SCRIPT_VERSION = '2.5.3';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3727,6 +3727,13 @@
       onerror: () => reject(new Error('CARFAX browser bridge is not running')),
       ontimeout: () => reject(new Error('CARFAX browser bridge did not respond')),
     }));
+  }
+  function focusAuctionWindow() {
+    GM_xmlhttpRequest({
+      method:'POST', url:`${BRIDGE}/focus-auction`, timeout:3000,
+      headers:{ 'Content-Type':'application/json' }, data:'{}',
+      onload:() => {}, onerror:() => {}, ontimeout:() => {},
+    });
   }
   function sheetSaveSettings() {
     const saved = GM_getValue(SHEET_SAVE_SETTINGS_KEY, {}) || {};
@@ -4530,23 +4537,34 @@
       carfaxValueUrl.searchParams.set('oveVin', vin);
       carfaxValueUrl.searchParams.set('oveZip', zip);
       carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
+      const popupName = `oveCarfaxValueWindow_${Date.now()}`;
+      carfaxValueUrl.searchParams.set('ovePopupName', popupName);
       const popupWidth = 520;
       const popupHeight = Math.min(900, Math.max(700, screen.availHeight - 80));
       const popupLeft = screen.availLeft + screen.availWidth - popupWidth - 12;
       const popupTop = screen.availTop + 35;
       const popup = window.open(
-        carfaxValueUrl.href,
-        'oveCarfaxValueWindow',
+        'about:blank',
+        popupName,
         `popup=yes,width=${popupWidth},height=${popupHeight},left=${popupLeft},top=${popupTop},resizable=yes,scrollbars=yes`
       );
       if (!popup) throw new Error('Chrome blocked the CARFAX popup');
+      try {
+        popup.resizeTo(popupWidth, popupHeight);
+        popup.moveTo(popupLeft, popupTop);
+        popup.location.replace(carfaxValueUrl.href);
+      } catch (_) {
+        popup.location.href = carfaxValueUrl.href;
+      }
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
         ...job, stage:'CARFAX is working in the separate Chrome window',
-        popupName:'oveCarfaxValueWindow',
+        popupName,
       });
       try { popup.blur(); window.focus(); } catch (_) {}
-      [120, 300, 700].forEach((delay) => setTimeout(() => {
+      focusAuctionWindow();
+      [120, 300, 700, 1200].forEach((delay) => setTimeout(() => {
         try { popup.blur(); window.focus(); } catch (_) {}
+        focusAuctionWindow();
       }, delay));
       return { source:'separate Chrome window' };
     } catch (error) {
