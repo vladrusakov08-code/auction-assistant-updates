@@ -1,6 +1,6 @@
 {
-  "version": "2.3.4",
+  "version": "2.3.5",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-26T19:50:25-07:00",
-  "notes": "Prevent Manheim result pages from freezing or turning white by avoiding full-page VIN rescans"
+  "releasedAt": "2026-07-27T21:20:00-07:00",
+  "notes": "KBB-only lookup now adds a cached public CARFAX Retail Value without generating a CARFAX report; a full report still overrides the estimate"
 }
