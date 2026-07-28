@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.4.1
+// @version      2.4.2
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3050,7 +3050,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.4.1';
+  const SCRIPT_VERSION = '2.4.2';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3174,7 +3174,7 @@
       }
       if (submitted || Date.now() - formPreparedAt < 1000) return;
       if (button.disabled) {
-        if (Date.now() - formPreparedAt > 10000) {
+        if (Date.now() - formPreparedAt > 20000) {
           GM_setValue(CARFAX_VALUE_JOB_KEY, {
             ...job, stage:'CARFAX could not validate this VIN',
             error:'CARFAX validation timed out', completedAt:Date.now(),
@@ -4494,7 +4494,10 @@
       carfaxValueUrl.searchParams.set('oveZip', zip);
       carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
       GM_openInTab(carfaxValueUrl.href, {
-        active:false, insert:true, setParent:true,
+        // Chrome can suspend an unopened background tab before CARFAX finishes
+        // client-side VIN validation. A short foreground visit is reliable;
+        // the tab closes itself and Chrome returns to the auction automatically.
+        active:true, insert:true, setParent:true,
       });
       return { source:'new lookup' };
     } catch (error) {
