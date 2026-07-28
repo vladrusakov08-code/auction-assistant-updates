@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.3.7
+// @version      2.3.8
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -13,6 +13,7 @@
 // @match        *://www.copart.com/*
 // @match        *://*.copart.com/*
 // @match        https://carfax-app.vercel.app/*
+// @match        https://carfax.com/value/*
 // @match        https://www.carfax.com/value/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
@@ -3049,7 +3050,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.3.7';
+  const SCRIPT_VERSION = '2.3.8';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3547,7 +3548,7 @@
     };
     tick(); setInterval(tick, 500);
   }
-  if (HOST === 'www.carfax.com' && location.pathname.startsWith('/value')) {
+  if ((HOST === 'carfax.com' || HOST === 'www.carfax.com') && location.pathname.startsWith('/value')) {
     runPublicCarfaxValueAutomation();
     return;
   }
