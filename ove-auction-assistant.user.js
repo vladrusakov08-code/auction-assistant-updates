@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.3.5
+// @version      2.3.6
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3049,7 +3049,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.3.5';
+  const SCRIPT_VERSION = '2.3.6';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3114,6 +3114,7 @@
   function runPublicCarfaxValueAutomation() {
     const started = Date.now();
     let submitted = false;
+    let formPreparedAt = 0;
     const tick = () => {
       const job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
       if (!job || job.completedAt || Date.now() - Number(job.startedAt || 0) > 3 * 60 * 1000) return;
@@ -3132,27 +3133,31 @@
         setTimeout(() => window.close(), 500);
         return;
       }
-      if (submitted) return;
-      const vinInput = [...document.querySelectorAll('input')].find((input) =>
-        /vin/i.test(`${input.name} ${input.id} ${input.getAttribute('aria-label') || ''}`));
-      const zipInput = [...document.querySelectorAll('input')].find((input) =>
-        /zip/i.test(`${input.name} ${input.id} ${input.getAttribute('aria-label') || ''}`));
+      const vinInput = document.querySelector('#vin');
+      const zipInput = document.querySelector('#vin-zip-code');
       const button = [...document.querySelectorAll('button')].find((item) =>
         /get carfax value/i.test(item.textContent || ''));
       if (!vinInput || !zipInput || !button) return;
-      submitted = true;
-      setPublicCarfaxInput(vinInput, job.vin);
-      setPublicCarfaxInput(zipInput, job.zip);
-      setTimeout(() => {
-        const current = GM_getValue(CARFAX_VALUE_JOB_KEY, job);
-        if (button.disabled) {
-          submitted = false;
-          GM_setValue(CARFAX_VALUE_JOB_KEY, { ...current, stage:'CARFAX is validating the VIN' });
-          return;
+      if (!formPreparedAt) {
+        setPublicCarfaxInput(vinInput, job.vin);
+        setPublicCarfaxInput(zipInput, job.zip);
+        formPreparedAt = Date.now();
+        GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, stage:'CARFAX is validating the VIN' });
+        return;
+      }
+      if (submitted || Date.now() - formPreparedAt < 1800) return;
+      if (button.disabled) {
+        if (Date.now() - formPreparedAt > 10000) {
+          GM_setValue(CARFAX_VALUE_JOB_KEY, {
+            ...job, stage:'CARFAX could not validate this VIN',
+            error:'CARFAX validation timed out', completedAt:Date.now(),
+          });
         }
-        GM_setValue(CARFAX_VALUE_JOB_KEY, { ...current, stage:'Getting CARFAX Retail Value', submittedAt:Date.now() });
-        button.click();
-      }, 1200);
+        return;
+      }
+      submitted = true;
+      GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, stage:'Getting CARFAX Retail Value', submittedAt:Date.now() });
+      button.click();
     };
     tick();
     const timer = setInterval(() => {
