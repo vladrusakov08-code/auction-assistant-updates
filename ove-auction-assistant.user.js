@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.3.8
+// @version      2.3.9
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3050,7 +3050,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.3.8';
+  const SCRIPT_VERSION = '2.3.9';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3117,7 +3117,19 @@
     let submitted = false;
     let formPreparedAt = 0;
     const tick = () => {
-      const job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
+      const params = new URLSearchParams(location.search);
+      const queryVin = String(params.get('oveVin') || '').toUpperCase();
+      const queryZip = String(params.get('oveZip') || '');
+      let job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
+      if (/^[A-HJ-NPR-Z0-9]{17}$/.test(queryVin) && /^\d{5}$/.test(queryZip) &&
+          (!job || job.vin !== queryVin || job.completedAt)) {
+        job = {
+          vin:queryVin, zip:queryZip, title:'',
+          startedAt:Number(params.get('oveStarted') || Date.now()),
+          stage:'CARFAX Value tab ready',
+        };
+        GM_setValue(CARFAX_VALUE_JOB_KEY, job);
+      }
       if (!job || job.completedAt || Date.now() - Number(job.startedAt || 0) > 3 * 60 * 1000) return;
       const pageText = document.body?.innerText || '';
       if (/captcha|verify you are human|access denied|too many requests/i.test(`${location.href} ${pageText}`)) {
@@ -3166,6 +3178,10 @@
       const job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
       if (!job || job.completedAt || Date.now() - started > 3 * 60 * 1000) clearInterval(timer);
     }, 700);
+  }
+  if ((HOST === 'carfax.com' || HOST === 'www.carfax.com') && location.pathname.startsWith('/value')) {
+    runPublicCarfaxValueAutomation();
+    return;
   }
 
   function queueRequest(method, url, body = null, headers = {}) {
@@ -3547,10 +3563,6 @@
       }
     };
     tick(); setInterval(tick, 500);
-  }
-  if ((HOST === 'carfax.com' || HOST === 'www.carfax.com') && location.pathname.startsWith('/value')) {
-    runPublicCarfaxValueAutomation();
-    return;
   }
   if (location.hostname === 'carfax-app.vercel.app') return;
   // The CARFAX helper above is the only supported non-auction page.
@@ -4447,7 +4459,11 @@
     GM_setValue(CARFAX_VALUE_JOB_KEY, job);
     GM_setValue(CARFAX_VALUE_LAST_LOOKUP_KEY, Date.now());
     try {
-      GM_openInTab('https://www.carfax.com/value/', {
+      const carfaxValueUrl = new URL('https://www.carfax.com/value/');
+      carfaxValueUrl.searchParams.set('oveVin', vin);
+      carfaxValueUrl.searchParams.set('oveZip', zip);
+      carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
+      GM_openInTab(carfaxValueUrl.href, {
         active:false, insert:true, setParent:true,
       });
       return { source:'new lookup' };
