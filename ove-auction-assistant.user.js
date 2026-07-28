@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.4.2
+// @version      2.5.0
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -13,13 +13,10 @@
 // @match        *://www.copart.com/*
 // @match        *://*.copart.com/*
 // @match        https://carfax-app.vercel.app/*
-// @match        https://carfax.com/value/*
-// @match        https://www.carfax.com/value/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_addValueChangeListener
-// @grant        GM_openInTab
 // @connect      identitytoolkit.googleapis.com
 // @connect      securetoken.googleapis.com
 // @connect      firestore.googleapis.com
@@ -3050,7 +3047,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.4.2';
+  const SCRIPT_VERSION = '2.5.0';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3061,6 +3058,7 @@
   const IS_SUPPORTED_AUCTION = HOST.includes('ove.com') || HOST.includes('manheim.com') || HOST.includes('copart.com');
   const AUCTION_SITE = HOST.includes('copart') ? 'COPART' : HOST.includes('manheim') ? 'MANHEIM' : HOST.includes('ove.com') ? 'OVE' : 'VEHICLE';
   const BRIDGE = 'http://127.0.0.1:8765';
+  const CARFAX_BRIDGE = 'http://127.0.0.1:8766';
   const SETTINGS_KEY = 'oveKbbSettings';
   const JOB_KEY = 'oveKbbActiveJob';
   const CARFAX_JOB_KEY = 'oveCarfaxActiveJob';
@@ -3087,116 +3085,6 @@
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const kbbJobKey = (vin) => `${JOB_KEY}:${vin}`;
   const carfaxValueKey = (vin) => `oveCarfaxValueEstimate:${vin}`;
-
-  function publicCarfaxValueFromPage(job) {
-    const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
-    const vin = text.match(/\bVIN:\s*([A-HJ-NPR-Z0-9]{17})\b/i)?.[1]?.toUpperCase();
-    const retail = text.match(/Buying car at the dealership\s*-\s*suggested value:\s*\$([\d,]+)/i)?.[1];
-    if (!vin || vin !== job.vin || !retail) return null;
-    const heading = [...document.querySelectorAll('h1,h2')]
-      .map((node) => node.textContent?.replace(/\s+/g, ' ').trim())
-      .find((value) => /^(?:19|20)\d{2}\s+/.test(value || '')) || job.title || '';
-    const records = Number(text.match(/We found\s+(\d+)\s+records/i)?.[1] || 0) || null;
-    return {
-      vin, zip:job.zip, title:heading,
-      retailValue:Number(retail.replace(/,/g, '')),
-      records, source:'CARFAX Value', captureMode:'stable-v1', fetchedAt:Date.now(),
-    };
-  }
-
-  function setPublicCarfaxInput(input, value) {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(input, value);
-    input.dispatchEvent(new Event('input', { bubbles:true }));
-    input.dispatchEvent(new Event('change', { bubbles:true }));
-    input.blur();
-  }
-
-  function runPublicCarfaxValueAutomation() {
-    const started = Date.now();
-    let submitted = false;
-    let formPreparedAt = 0;
-    let lastRetailValue = 0;
-    let retailStableSince = 0;
-    const tick = () => {
-      const params = new URLSearchParams(location.search);
-      const queryVin = String(params.get('oveVin') || '').toUpperCase();
-      const queryZip = String(params.get('oveZip') || '');
-      let job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
-      if (/^[A-HJ-NPR-Z0-9]{17}$/.test(queryVin) && /^\d{5}$/.test(queryZip) &&
-          (!job || job.vin !== queryVin || job.completedAt)) {
-        job = {
-          vin:queryVin, zip:queryZip, title:'',
-          startedAt:Number(params.get('oveStarted') || Date.now()),
-          stage:'CARFAX Value tab ready',
-        };
-        GM_setValue(CARFAX_VALUE_JOB_KEY, job);
-      }
-      if (!job || job.completedAt || Date.now() - Number(job.startedAt || 0) > 3 * 60 * 1000) return;
-      const pageText = document.body?.innerText || '';
-      if (/captcha|verify you are human|access denied|too many requests/i.test(`${location.href} ${pageText}`)) {
-        GM_setValue(CARFAX_VALUE_JOB_KEY, {
-          ...job, stage:'CARFAX verification required — open the CARFAX tab',
-          error:'CARFAX verification required', completedAt:Date.now(),
-        });
-        return;
-      }
-      const result = publicCarfaxValueFromPage(job);
-      if (result) {
-        if (result.retailValue !== lastRetailValue) {
-          lastRetailValue = result.retailValue;
-          retailStableSince = Date.now();
-          GM_setValue(CARFAX_VALUE_JOB_KEY, {
-            ...job, stage:`Waiting for final CARFAX value · $${result.retailValue.toLocaleString('en-US')}`,
-          });
-          return;
-        }
-        if (Date.now() - retailStableSince < 2100) return;
-        GM_setValue(carfaxValueKey(job.vin), result);
-        GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, ...result, stage:'CARFAX Retail Value ready', completedAt:Date.now() });
-        setTimeout(() => window.close(), 500);
-        return;
-      }
-      const vinInput = document.querySelector('#vin');
-      const zipInput = document.querySelector('#vin-zip-code');
-      const button = [...document.querySelectorAll('button')].find((item) =>
-        /get carfax value/i.test(item.textContent || ''));
-      if (!vinInput || !zipInput || !button) return;
-      // Next.js can replace the form controls once during hydration. Wait for
-      // the client app, then restore the values if hydration cleared them.
-      if (Date.now() - started < 1200) return;
-      if (!formPreparedAt || vinInput.value !== job.vin || zipInput.value !== job.zip) {
-        setPublicCarfaxInput(vinInput, job.vin);
-        setPublicCarfaxInput(zipInput, job.zip);
-        formPreparedAt = Date.now();
-        GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, stage:'CARFAX is validating the VIN' });
-        return;
-      }
-      if (submitted || Date.now() - formPreparedAt < 1000) return;
-      if (button.disabled) {
-        if (Date.now() - formPreparedAt > 20000) {
-          GM_setValue(CARFAX_VALUE_JOB_KEY, {
-            ...job, stage:'CARFAX could not validate this VIN',
-            error:'CARFAX validation timed out', completedAt:Date.now(),
-          });
-        }
-        return;
-      }
-      submitted = true;
-      GM_setValue(CARFAX_VALUE_JOB_KEY, { ...job, stage:'Getting CARFAX Retail Value', submittedAt:Date.now() });
-      button.click();
-    };
-    tick();
-    const timer = setInterval(() => {
-      tick();
-      const job = GM_getValue(CARFAX_VALUE_JOB_KEY, null);
-      if (!job || job.completedAt || Date.now() - started > 3 * 60 * 1000) clearInterval(timer);
-    }, 700);
-  }
-  if ((HOST === 'carfax.com' || HOST === 'www.carfax.com') && location.pathname.startsWith('/value')) {
-    runPublicCarfaxValueAutomation();
-    return;
-  }
 
   function queueRequest(method, url, body = null, headers = {}) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
@@ -3720,6 +3608,21 @@
       ontimeout: () => reject(new Error('KBB Bridge did not respond')),
     }));
   }
+  function carfaxBridge(method, path = '/status', data = null) {
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method, url: `${CARFAX_BRIDGE}${path}`, timeout: 7000,
+      headers: { 'Content-Type': 'application/json' },
+      data: data ? JSON.stringify(data) : undefined,
+      onload: (response) => {
+        let payload = {};
+        try { payload = JSON.parse(response.responseText || '{}'); } catch (_) {}
+        if (response.status >= 200 && response.status < 300) return resolve(payload);
+        reject(new Error(payload.message || `CARFAX browser HTTP ${response.status}`));
+      },
+      onerror: () => reject(new Error('CARFAX browser bridge is not running')),
+      ontimeout: () => reject(new Error('CARFAX browser bridge did not respond')),
+    }));
+  }
   function sheetSaveSettings() {
     const saved = GM_getValue(SHEET_SAVE_SETTINGS_KEY, {}) || {};
     return { ...saved, webAppUrl:SHEET_SAVE_WEB_APP_URL };
@@ -3845,6 +3748,8 @@
       #ove-kbb-panel .carfax-icon svg{display:block;width:25px;height:25px}#ove-kbb-panel .carfax-metric .value{font-size:15px}
       #ove-kbb-panel .carfax-retail .value{color:#187339;font-size:18px}
       #ove-kbb-panel .carfax-status{padding:0 13px 11px;text-align:center;font-size:12px;color:#8da0bc}
+      #ove-kbb-panel .carfax-captcha-open{border:0;background:none;color:#1765c1;font:inherit;font-weight:800;
+        text-decoration:underline;cursor:pointer;padding:2px}
       #ove-kbb-panel .deal-card{padding:0;overflow:hidden}
       #ove-kbb-panel .deal-card summary{display:flex;align-items:center;justify-content:space-between;padding:12px 13px;
         cursor:pointer;list-style:none;font-weight:800;background:linear-gradient(180deg,#fff,#f7f9fc)}
@@ -4261,6 +4166,26 @@
       };
     });
   }
+  function carfaxValueStatus(job, vehicle, fallback) {
+    if (job?.vin !== vehicle.vin) return fallback;
+    if (job.code === 'captcha') {
+      return `<button type="button" class="carfax-captcha-open">CARFAX verification required — Open browser ↗</button>`;
+    }
+    return job.stage || fallback;
+  }
+  function bindCarfaxCaptchaButton() {
+    document.querySelectorAll('#ove-kbb-content .carfax-captcha-open').forEach((button) => {
+      button.onclick = async (event) => {
+        event.preventDefault();
+        button.textContent = 'Opening CARFAX browser…';
+        try {
+          await carfaxBridge('POST', '/focus');
+        } catch (error) {
+          button.textContent = error.message;
+        }
+      };
+    });
+  }
   function render(message = '') {
     makePanel();
     const vehicle = readVehicle(); const config = settings();
@@ -4273,7 +4198,7 @@
     let carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
     if (vehicle.manual && Number(manualState.lookupStartedAt || 0) > Number(carfax?.completedAt || 0)) carfax = null;
     const savedCarfaxValue = GM_getValue(carfaxValueKey(vehicle.vin), null);
-    const carfaxValue = savedCarfaxValue?.captureMode === 'stable-v1' ? savedCarfaxValue : null;
+    const carfaxValue = /^stable-v\d+$/.test(savedCarfaxValue?.captureMode || '') ? savedCarfaxValue : null;
     const carfaxRetail = Number(carfax?.retailValue || carfaxValue?.retailValue || 0) || null;
     const effectiveCarfax = { ...(carfax || {}), retailValue:carfaxRetail };
     const carfaxJob = GM_getValue(CARFAX_JOB_KEY, null);
@@ -4305,9 +4230,8 @@
               <div class="carfax-metric"><div class="label">${carfax ? (carfaxClean ? 'No Accidents or Damage' : 'Accident') : 'Accidents / Damage'}</div>${carfax ? `<div class="carfax-icon">${accidentIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
               <div class="carfax-metric"><div class="label">${carfax?.owners != null ? `${carfax.owners} Owner${carfax.owners === 1 ? '' : 's'}` : 'Owners'}</div>${carfax ? `<div class="carfax-icon">${ownerIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
             </div>
-            ${!carfax ? `<div class="carfax-status">${carfaxValueJob?.vin === vehicle.vin && carfaxValueJob.stage
-              ? carfaxValueJob.stage
-              : (carfaxRetail ? 'CARFAX Value estimate · report not checked' : (carfaxJob?.stage || 'CARFAX value pending'))}</div>` : ''}
+            ${!carfax ? `<div class="carfax-status">${carfaxValueStatus(carfaxValueJob, vehicle,
+              carfaxRetail ? 'CARFAX Value estimate · report not checked' : (carfaxJob?.stage || 'CARFAX value pending'))}</div>` : ''}
           </div>` : ''}`;
       const saveManualVehicle = (requireMileage, mode) => {
         const vin = document.getElementById('ove-manual-vin').value.trim().toUpperCase();
@@ -4340,6 +4264,7 @@
         render();
         run('both');
       };
+      bindCarfaxCaptchaButton();
       return;
     }
     target.innerHTML = `<div class="vehicle-head"><div class="vehicle">${vehicle.title}</div><button id="ove-save-vehicle" title="Save vehicle to Manheim v2">${sheetSaved ? '♥' : '♡'}</button></div><div class="muted">${vehicle.vin}</div>
@@ -4359,9 +4284,9 @@
           <div class="carfax-metric"><div class="label">${carfax ? carfaxAccidentLabel : 'Accidents / Damage'}</div>${carfax ? `<div class="carfax-icon">${accidentIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
           <div class="carfax-metric"><div class="label">${carfax?.owners != null ? `${carfax.owners} Owner${carfax.owners === 1 ? '' : 's'}` : 'Owners'}</div>${carfax ? `<div class="carfax-icon">${ownerIcon(carfax)}</div>` : '<div class="value">—</div>'}</div>
         </div>
-        ${!carfax ? `<div class="carfax-status">${carfaxValueJob?.vin === vehicle.vin && carfaxValueJob.stage
-          ? carfaxValueJob.stage
-          : (carfaxRetail ? 'CARFAX Value estimate · report not checked' : (carfaxJob?.vin === vehicle.vin ? (carfaxJob.stage || 'Report pending') : 'Retail value pending'))}</div>` : ''}
+        ${!carfax ? `<div class="carfax-status">${carfaxValueStatus(carfaxValueJob, vehicle,
+          carfaxRetail ? 'CARFAX Value estimate · report not checked' :
+            (carfaxJob?.vin === vehicle.vin ? (carfaxJob.stage || 'Report pending') : 'Retail value pending'))}</div>` : ''}
       </div>
       ${dealMarkup(vehicle.vin, values, effectiveCarfax)}
       <div class="lookup-actions"><button id="ove-carfax-run">CARFAX</button><button id="ove-kbb-only-run">KBB</button></div>
@@ -4388,6 +4313,7 @@
       await startCarfaxValue(vehicle, config.zip, true);
     };
     document.getElementById('ove-kbb-run').onclick = (event) => { event.preventDefault(); run('both'); };
+    bindCarfaxCaptchaButton();
     bindDealInputs(vehicle.vin);
     if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)) {
       ensureAutoDelivery(vehicle).then((estimate) => {
@@ -4463,7 +4389,7 @@
     const vin = vehicle.vin.toUpperCase();
     const fullReport = GM_getValue(`oveCarfaxResult:${vin}`, null);
     if (!force && Number(fullReport?.retailValue || 0) > 0) return { source:'report', value:fullReport };
-    const fresh = (value) => value && value.captureMode === 'stable-v1' &&
+    const fresh = (value) => value && /^stable-v\d+$/.test(value.captureMode || '') &&
       value.zip === zip && Number(value.retailValue || 0) > 0 &&
       Date.now() - Number(value.fetchedAt || 0) < CARFAX_VALUE_CACHE_MS;
     const local = GM_getValue(carfaxValueKey(vin), null);
@@ -4484,27 +4410,48 @@
     if (waitMs) await sleep(waitMs);
     const job = {
       vin, zip, title:vehicle.title || '', startedAt:Date.now(),
-      stage:'Opening CARFAX Value once',
+      stage:'Sending VIN to the separate CARFAX browser',
     };
     GM_setValue(CARFAX_VALUE_JOB_KEY, job);
     GM_setValue(CARFAX_VALUE_LAST_LOOKUP_KEY, Date.now());
     try {
-      const carfaxValueUrl = new URL('https://www.carfax.com/value/');
-      carfaxValueUrl.searchParams.set('oveVin', vin);
-      carfaxValueUrl.searchParams.set('oveZip', zip);
-      carfaxValueUrl.searchParams.set('oveStarted', String(job.startedAt));
-      GM_openInTab(carfaxValueUrl.href, {
-        // Chrome can suspend an unopened background tab before CARFAX finishes
-        // client-side VIN validation. A short foreground visit is reliable;
-        // the tab closes itself and Chrome returns to the auction automatically.
-        active:true, insert:true, setParent:true,
-      });
-      return { source:'new lookup' };
+      await carfaxBridge('POST', '/lookup', { vin, zip, force });
+      const deadline = Date.now() + 65000;
+      while (Date.now() < deadline) {
+        await sleep(500);
+        const status = await carfaxBridge('GET', '/status');
+        if (status.vin && status.vin !== vin) continue;
+        if (status.status === 'done' && status.result?.vin === vin) {
+          const result = status.result;
+          GM_setValue(carfaxValueKey(vin), result);
+          GM_setValue(CARFAX_VALUE_JOB_KEY, {
+            ...job, ...result, stage:'CARFAX Retail Value ready', completedAt:Date.now(),
+          });
+          publishSharedResult(vin, vehicle);
+          render();
+          return { source:'browser bridge', value:result };
+        }
+        if (status.status === 'error') {
+          GM_setValue(CARFAX_VALUE_JOB_KEY, {
+            ...job, stage:status.message || 'CARFAX lookup failed',
+            error:status.message || 'CARFAX lookup failed',
+            code:status.code || 'lookup_error', action:status.action || null,
+            completedAt:Date.now(),
+          });
+          render();
+          return { source:'error', error:status.message };
+        }
+        GM_setValue(CARFAX_VALUE_JOB_KEY, {
+          ...job, stage:status.message || 'Getting CARFAX Retail Value',
+        });
+      }
+      throw new Error('CARFAX browser lookup timed out');
     } catch (error) {
       GM_setValue(CARFAX_VALUE_JOB_KEY, {
-        ...job, stage:'Browser blocked the CARFAX Value tab',
-        error:error.message, completedAt:Date.now(),
+        ...job, stage:error.message || 'CARFAX browser lookup failed',
+        error:error.message, code:'bridge_error', completedAt:Date.now(),
       });
+      render();
       return { source:'error', error:error.message };
     }
   }
