@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.1
+// @version      2.7.2
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -1785,9 +1785,20 @@
     }
 
     function applyMarkedFilter(occurrences) {
+        const hiddenClass = SITE === 'ove'
+            ? 'vin-marker-filter-hidden-ove'
+            : 'vin-marker-filter-hidden';
+
+        const unhideCard = card => {
+            card?.classList?.remove(
+                'vin-marker-filter-hidden',
+                'vin-marker-filter-hidden-ove'
+            );
+        };
+
         if (hideMode === 'show') {
             filteredCards.forEach(card => {
-                card?.classList?.remove('vin-marker-filter-hidden');
+                unhideCard(card);
             });
             filteredCards.clear();
             return;
@@ -1800,7 +1811,7 @@
 
         if (isDetailPage) {
             filteredCards.forEach(card => {
-                card?.classList?.remove('vin-marker-filter-hidden');
+                unhideCard(card);
             });
             filteredCards.clear();
             return;
@@ -1825,12 +1836,18 @@
                     ? seenByVlad
                     : activeUser === WORKER && seenByWorker;
             const card = item.card;
+            const cardVins = card
+                ? new Set((card.textContent || '').match(VIN_REGEX) || [])
+                : new Set();
+            const unsafeContainer = !card ||
+                card === document.body ||
+                card === document.documentElement ||
+                card.matches?.('html, body, main, [role="main"], #root, #app') ||
+                cardVins.size > 1;
 
             if (
                 shouldHide &&
-                card &&
-                card !== document.body &&
-                card !== document.documentElement
+                !unsafeContainer
             ) {
                 nextFilteredCards.add(card);
             }
@@ -1838,13 +1855,14 @@
 
         filteredCards.forEach(card => {
             if (!nextFilteredCards.has(card)) {
-                card?.classList?.remove('vin-marker-filter-hidden');
+                unhideCard(card);
             }
         });
 
         nextFilteredCards.forEach(card => {
-            if (!filteredCards.has(card)) {
-                card.classList.add('vin-marker-filter-hidden');
+            if (!filteredCards.has(card) || !card.classList.contains(hiddenClass)) {
+                unhideCard(card);
+                card.classList.add(hiddenClass);
             }
         });
 
@@ -2990,14 +3008,17 @@
 
     let mutationTimer;
     let mutationIdleHandle = null;
-    let lastCopartFingerprint = '';
+    let lastAuctionFingerprint = '';
     let markerStopped = false;
 
-    function copartFingerprint() {
-        const links = document.querySelectorAll('a[href*="/lot/"]');
+    function auctionFingerprint() {
+        const selector = SITE === 'copart'
+            ? 'a[href*="/lot/"]'
+            : 'a[href*="/details/"], a[href*="#/details/"]';
+        const links = document.querySelectorAll(selector);
         const first = links[0]?.getAttribute('href') || '';
         const last = links[links.length - 1]?.getAttribute('href') || '';
-        return `${location.pathname}|${links.length}|${first}|${last}`;
+        return `${location.href}|${links.length}|${first}|${last}`;
     }
 
     function scheduleMarkerPaint() {
@@ -3015,7 +3036,7 @@
             } else {
                 mutationIdleHandle = setTimeout(run, 0);
             }
-        }, SITE === 'copart' ? 1200 : (SITE === 'manheim' ? 1400 : 700));
+        }, SITE === 'copart' || SITE === 'ove' ? 1200 : 1400);
     }
 
     const observer =
@@ -3032,10 +3053,10 @@
 
             if (!hasExternalChange) return;
 
-            if (SITE === 'copart') {
-                const fingerprint = copartFingerprint();
-                if (fingerprint === lastCopartFingerprint) return;
-                lastCopartFingerprint = fingerprint;
+            if (SITE === 'copart' || SITE === 'ove') {
+                const fingerprint = auctionFingerprint();
+                if (fingerprint === lastAuctionFingerprint) return;
+                lastAuctionFingerprint = fingerprint;
             }
 
             scheduleMarkerPaint();
@@ -3076,7 +3097,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.1';
+  const SCRIPT_VERSION = '2.7.2';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4026,6 +4047,10 @@
       #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-slot>#ove-vin-marker-content>div:first-child{
         background:#172033!important;color:#e5e7eb!important;border-color:#3b4a60!important}
       .vin-marker-filter-hidden{display:none!important}
+      /* OVE recycles and measures result rows. Removing a row with display:none
+         makes its virtual list rebuild continuously, so keep the row geometry
+         while making marked inventory completely non-interactive and invisible. */
+      .vin-marker-filter-hidden-ove{visibility:hidden!important;opacity:0!important;pointer-events:none!important}
       .pulse{animation:kbbPulse 1.25s ease-in-out infinite}@keyframes kbbPulse{50%{opacity:.5}}
     </style><header><h2>${AUCTION_SITE} Auction Assistant</h2><div class="head-actions"><button id="ove-theme-toggle" title="Theme: Auto">Auto</button><button id="ove-kbb-settings" title="Settings">⚙</button>
       <button id="ove-kbb-close" title="Hide panel">×</button></div></header>
