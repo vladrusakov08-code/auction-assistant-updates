@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.0
+// @version      2.7.1
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -1517,39 +1517,25 @@
         function findCopartVinElement(root) {
             const vinPattern =
                 /(?:VIN\s*:\s*)?([A-HJ-NPR-Z0-9]{17})/i;
+            let fallback = null;
 
-            return [...root.querySelectorAll('*')]
-                .filter(element =>
-                    element.children.length <= 1
-                )
-                .map(element => ({
-                    element,
-                    match:
-                        element.textContent
-                            ?.replace(/\s+/g, ' ')
-                            .trim()
-                            .match(vinPattern)
-                }))
-                .find(item =>
-                    item.match &&
-                    item.element.textContent
-                        ?.toUpperCase()
-                        .includes('VIN')
-                ) ||
-                [...root.querySelectorAll('*')]
-                    .filter(element =>
-                        element.children.length <= 1
-                    )
-                    .map(element => ({
-                        element,
-                        match:
-                            element.textContent
-                                ?.replace(/\s+/g, ' ')
-                                .trim()
-                                .match(vinPattern)
-                    }))
-                    .find(item => item.match) ||
-                null;
+            // One pass only. The previous implementation traversed the complete
+            // Copart card twice after nearly every SPA mutation.
+            for (const element of root.querySelectorAll('*')) {
+                if (element.children.length > 1) continue;
+                const match = element.textContent
+                    ?.replace(/\s+/g, ' ')
+                    .trim()
+                    .match(vinPattern);
+                if (!match) continue;
+                const item = { element, match };
+                if (element.textContent?.toUpperCase().includes('VIN')) {
+                    return item;
+                }
+                if (!fallback) fallback = item;
+            }
+
+            return fallback;
         }
 
         function addLot(
@@ -3003,6 +2989,34 @@
     );
 
     let mutationTimer;
+    let mutationIdleHandle = null;
+    let lastCopartFingerprint = '';
+    let markerStopped = false;
+
+    function copartFingerprint() {
+        const links = document.querySelectorAll('a[href*="/lot/"]');
+        const first = links[0]?.getAttribute('href') || '';
+        const last = links[links.length - 1]?.getAttribute('href') || '';
+        return `${location.pathname}|${links.length}|${first}|${last}`;
+    }
+
+    function scheduleMarkerPaint() {
+        if (markerStopped || mutationTimer || mutationIdleHandle) return;
+
+        mutationTimer = setTimeout(() => {
+            mutationTimer = null;
+            const run = () => {
+                mutationIdleHandle = null;
+                if (!markerStopped) paintSeenVins();
+            };
+
+            if (typeof requestIdleCallback === 'function') {
+                mutationIdleHandle = requestIdleCallback(run, { timeout: 1800 });
+            } else {
+                mutationIdleHandle = setTimeout(run, 0);
+            }
+        }, SITE === 'copart' ? 1200 : (SITE === 'manheim' ? 1400 : 700));
+    }
 
     const observer =
         new MutationObserver(mutations => {
@@ -3018,15 +3032,13 @@
 
             if (!hasExternalChange) return;
 
-            clearTimeout(
-                mutationTimer
-            );
+            if (SITE === 'copart') {
+                const fingerprint = copartFingerprint();
+                if (fingerprint === lastCopartFingerprint) return;
+                lastCopartFingerprint = fingerprint;
+            }
 
-            mutationTimer =
-                setTimeout(
-                    paintSeenVins,
-                    SITE === 'manheim' ? 1400 : 700
-                );
+            scheduleMarkerPaint();
         });
 
     observer.observe(
@@ -3037,19 +3049,34 @@
         }
     );
 
-    setInterval(
+    const markerSyncInterval = setInterval(
         () => {
             synchronize(false);
         },
         AUTO_SYNC_INTERVAL
     );
 
+    window.addEventListener('pagehide', () => {
+        markerStopped = true;
+        observer.disconnect();
+        clearTimeout(mutationTimer);
+        clearTimeout(copartAutoSyncTimer);
+        clearInterval(markerSyncInterval);
+        if (mutationIdleHandle) {
+            if (typeof cancelIdleCallback === 'function') {
+                cancelIdleCallback(mutationIdleHandle);
+            } else {
+                clearTimeout(mutationIdleHandle);
+            }
+        }
+    }, { once: true });
+
 })();
 
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.0';
+  const SCRIPT_VERSION = '2.7.1';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4898,26 +4925,44 @@
   });
   let lastUrl = location.href;
   let lastVehicleSignature = '';
+  let helperVehicleStable = false;
+  let helperStopped = false;
   function refreshIfVehicleChanged(force = false) {
     const vehicle = readVehicle();
     const signature = `${location.href}|${vehicle.vin}|${vehicle.mileage}|${vehicle.title}|${vehicle.color}`;
     if (!force && signature === lastVehicleSignature) return;
     lastVehicleSignature = signature;
+    helperVehicleStable = Boolean(vehicle.vin && vehicle.mileage && vehicle.title);
     render();
     hydrateSharedResult(vehicle, force).then((loaded) => { if (loaded) render('Loaded shared KBB/CARFAX data'); });
   }
   refreshIfVehicleChanged(true);
   let helperMutationTimer;
-  const helperObserver = new MutationObserver(() => {
+  const helperObserver = new MutationObserver((mutations) => {
+    if (helperStopped || helperVehicleStable) return;
+    const hasExternalChange = mutations.some((mutation) => {
+      const target = mutation.target?.nodeType === Node.ELEMENT_NODE
+        ? mutation.target
+        : mutation.target?.parentElement;
+      return target && !target.closest('#ove-kbb-panel, #ove-vin-marker-source, #ove-assistant-toggle');
+    });
+    if (!hasExternalChange) return;
     clearTimeout(helperMutationTimer);
-    helperMutationTimer = setTimeout(() => refreshIfVehicleChanged(false), 450);
+    helperMutationTimer = setTimeout(() => refreshIfVehicleChanged(false), 900);
   });
-  helperObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
-  setInterval(() => {
+  helperObserver.observe(document.body, { childList: true, subtree: true });
+  const helperUrlInterval = setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       lastVehicleSignature = '';
+      helperVehicleStable = false;
       refreshIfVehicleChanged(true);
     }
-  }, 800);
+  }, 1200);
+  window.addEventListener('pagehide', () => {
+    helperStopped = true;
+    helperObserver.disconnect();
+    clearTimeout(helperMutationTimer);
+    clearInterval(helperUrlInterval);
+  }, { once: true });
 })();
