@@ -1,6 +1,6 @@
 {
-  "version": "2.7.3",
+  "version": "2.7.4",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-28T21:50:00-07:00",
-  "notes": "Prevent Copart MARK VLAD from saving preloaded hidden vehicles from the next results page"
+  "releasedAt": "2026-07-28T22:05:00-07:00",
+  "notes": "Compact OVE hidden results without blank gaps and make SHOW ALL clear every stale filter class after OVE rerenders"
 }
