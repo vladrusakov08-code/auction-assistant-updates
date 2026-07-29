@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.3
+// @version      2.7.4
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -2975,18 +2975,41 @@
         updateCounter();
     });
 
+    let filterReconcileTimers = [];
+
+    function clearFilterClassesEverywhere() {
+        document.querySelectorAll(
+            '.vin-marker-filter-hidden, .vin-marker-filter-hidden-ove'
+        ).forEach(card => {
+            card.classList.remove(
+                'vin-marker-filter-hidden',
+                'vin-marker-filter-hidden-ove'
+            );
+        });
+        filteredCards.clear();
+    }
+
     hideSelect.addEventListener('change', () => {
         hideMode = hideSelect.value;
+        filterReconcileTimers.forEach(clearTimeout);
+        filterReconcileTimers = [];
 
         if (hideMode === 'show') {
-            filteredCards.forEach(card => {
-                card?.classList?.remove('vin-marker-filter-hidden');
-            });
-            filteredCards.clear();
+            clearFilterClassesEverywhere();
             return;
         }
 
         paintSeenVins();
+
+        // OVE may replace the results once after their height changes. Reapply
+        // the selected filter a bounded number of times, never continuously.
+        if (SITE === 'ove') {
+            filterReconcileTimers = [700, 1700].map(delay =>
+                setTimeout(() => {
+                    if (hideMode !== 'show') paintSeenVins();
+                }, delay)
+            );
+        }
     });
 
     syncButton.addEventListener(
@@ -3113,6 +3136,7 @@
         observer.disconnect();
         clearTimeout(mutationTimer);
         clearTimeout(copartAutoSyncTimer);
+        filterReconcileTimers.forEach(clearTimeout);
         clearInterval(markerSyncInterval);
         if (mutationIdleHandle) {
             if (typeof cancelIdleCallback === 'function') {
@@ -3128,7 +3152,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.3';
+  const SCRIPT_VERSION = '2.7.4';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4078,10 +4102,9 @@
       #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-slot>#ove-vin-marker-content>div:first-child{
         background:#172033!important;color:#e5e7eb!important;border-color:#3b4a60!important}
       .vin-marker-filter-hidden{display:none!important}
-      /* OVE recycles and measures result rows. Removing a row with display:none
-         makes its virtual list rebuild continuously, so keep the row geometry
-         while making marked inventory completely non-interactive and invisible. */
-      .vin-marker-filter-hidden-ove{visibility:hidden!important;opacity:0!important;pointer-events:none!important}
+      /* OVE filtering is applied in one batch and reconciled only twice. This
+         compacts visible inventory without leaving full-height empty rows. */
+      .vin-marker-filter-hidden-ove{display:none!important}
       .pulse{animation:kbbPulse 1.25s ease-in-out infinite}@keyframes kbbPulse{50%{opacity:.5}}
     </style><header><h2>${AUCTION_SITE} Auction Assistant</h2><div class="head-actions"><button id="ove-theme-toggle" title="Theme: Auto">Auto</button><button id="ove-kbb-settings" title="Settings">⚙</button>
       <button id="ove-kbb-close" title="Hide panel">×</button></div></header>
