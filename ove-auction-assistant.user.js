@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.2
+// @version      2.7.3
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -2081,12 +2081,43 @@
        MARK CURRENT PAGE
     ======================================== */
 
+    function occurrenceIsOnCurrentPage(item) {
+        if (SITE !== 'copart') return true;
+
+        const element = item.card || item.vinElement;
+        if (!element || !element.isConnected) return false;
+        if (element.closest('[hidden], [aria-hidden="true"]')) return false;
+
+        const style = getComputedStyle(element);
+        if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            Number(style.opacity) === 0
+        ) {
+            return false;
+        }
+
+        // Copart keeps a few rows from the next page mounted but collapsed.
+        // They have no rendered box and must not be included in MARK VLAD.
+        const rect = element.getBoundingClientRect();
+        if (
+            element.getClientRects().length === 0 ||
+            rect.width < 40 ||
+            rect.height < 20
+        ) {
+            return false;
+        }
+
+        return true;
+    }
+
     async function markPage(
         user,
         button
     ) {
         const occurrences =
-            findAllVinOccurrences();
+            findAllVinOccurrences()
+                .filter(occurrenceIsOnCurrentPage);
 
         const vins =
             [...new Set(
@@ -3097,7 +3128,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.2';
+  const SCRIPT_VERSION = '2.7.3';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
