@@ -1,6 +1,6 @@
 {
-  "version": "2.7.0",
+  "version": "2.7.1",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-07-28T20:00:00-07:00",
-  "notes": "Route saves to separate Manheim, OVE and Copart sheets; add normalized auction schedule, added-by metadata, delivery, extra costs, calculated fee and CARFAX value links"
+  "releasedAt": "2026-07-28T21:10:00-07:00",
+  "notes": "Reduce Copart CPU usage by coalescing DOM scans, ignoring assistant UI mutations, using idle-time marker updates and stopping observers and timers when leaving the page"
 }
