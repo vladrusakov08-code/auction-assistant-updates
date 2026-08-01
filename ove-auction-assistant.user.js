@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.4
+// @version      2.7.5
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3152,7 +3152,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.4';
+  const SCRIPT_VERSION = '2.7.5';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4238,7 +4238,7 @@
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
   const DELIVERY_DESTINATION = { zip:'90045', lat:33.9581, lon:-118.3890 };
-  const DELIVERY_RATE_VERSION = '2026-07-dealer-v2';
+  const DELIVERY_RATE_VERSION = '2026-07-dealer-v3';
   const deliveryLookups = new Map();
   function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
   function jsonRequest(url) {
@@ -4289,20 +4289,29 @@
     if (cached?.lat && cached?.lon) return cached;
     let point;
     if (origin.zip) {
-      const result = await jsonRequest(`https://api.zippopotam.us/us/${origin.zip}`);
-      const place = result?.places?.[0];
-      if (place) point = {
-        lat:Number(place.latitude), lon:Number(place.longitude),
-        label:origin.label || `${place['place name']}, ${place['state abbreviation']} ${origin.zip}`,
-        zip:origin.zip,
-      };
+      try {
+        const result = await jsonRequest(`https://api.zippopotam.us/us/${origin.zip}`);
+        const place = result?.places?.[0];
+        if (place) point = {
+          lat:Number(place.latitude), lon:Number(place.longitude),
+          label:origin.label || `${place['place name']}, ${place['state abbreviation']} ${origin.zip}`,
+          zip:origin.zip,
+        };
+      } catch (_) {
+        // Auction pages occasionally expose an obsolete or non-US ZIP. Keep
+        // going and geocode the visible auction/location name instead.
+      }
     }
     if (!point && origin.label) {
       const query = origin.label.replace(/\b(?:Manheim|OVE)\b/ig, ' ')
         .replace(/^([A-Z]{2})\s*-\s*(.+)$/i, '$2, $1').replace(/\s+/g, ' ').trim();
-      const results = await jsonRequest(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=1&q=${encodeURIComponent(query)}`);
-      const place = Array.isArray(results) ? results[0] : null;
-      if (place) point = { lat:Number(place.lat), lon:Number(place.lon), label:origin.label, zip:origin.zip || '' };
+      try {
+        const results = await jsonRequest(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=1&q=${encodeURIComponent(query)}`);
+        const place = Array.isArray(results) ? results[0] : null;
+        if (place) point = { lat:Number(place.lat), lon:Number(place.lon), label:origin.label, zip:origin.zip || '' };
+      } catch (_) {
+        // The caller reports a stable fallback only after both sources fail.
+      }
     }
     if (!point?.lat || !point?.lon) throw new Error('Auction location was not recognized');
     GM_setValue(cacheKey, point);
@@ -4694,7 +4703,8 @@
     bindCarfaxCaptchaButton();
     bindCarfaxValueButton(vehicle, config.zip);
     bindDealInputs(vehicle.vin);
-    if (!GM_getValue(deliveryEstimateKey(vehicle.vin), null)) {
+    const cachedDelivery = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
+    if (!cachedDelivery?.price) {
       ensureAutoDelivery(vehicle).then((estimate) => {
         if (readVehicle().vin === vehicle.vin) {
           render(estimate ? 'Delivery estimated automatically.' : 'Auction location is unavailable; delivery can be entered manually.');
