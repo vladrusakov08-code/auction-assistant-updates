@@ -3179,6 +3179,7 @@
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
+  const LASER_UPDATE_ENDPOINT = 'https://vordtools-kbb.147-182-233-195.sslip.io/laser-auth';
   const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
   const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
@@ -3480,18 +3481,6 @@
       .sort((a,b) => a.createdAt - b.createdAt)[0];
     return attached?.id || id;
   }
-  async function enqueueLaserLinkUpdate(vehicle, zip, laserUrl) {
-    const id = `${Date.now()}-laser-${Math.random().toString(36).slice(2,8)}`;
-    await mutateSharedKbbQueue((queue) => {
-      const requestedBy = GM_getValue('vin_marker_active_profile_v1', '') || 'user';
-      const now = Date.now();
-      queue.jobs[id] = { id, ...vehicle, zip, action:'updateLaserAuth', laserUrl,
-        status:'queued', message:'Validating new Laser link', requestedBy, createdAt:now, updatedAt:now };
-      queue.pending.push(id);
-    });
-    return id;
-  }
-
   async function updateLaserLink(vehicle, zip) {
     const laserUrl = window.prompt('Paste the complete fresh Laser History URL:');
     if (!laserUrl) return;
@@ -3503,26 +3492,25 @@
       render('This is not a valid Laser History URL.'); return;
     }
     try {
-      const cloudJobId = await enqueueLaserLinkUpdate(vehicle, zip, parsed.href);
-      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId,
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle,
         stage:'Validating new Laser link on server', progress:3, startedAt:Date.now() });
       render();
-      const deadline = Date.now() + 3 * 60 * 1000;
-      while (Date.now() < deadline) {
-        await sleep(3000);
-        const { state:queue } = await readSharedKbbQueue();
-        const state = queue.jobs?.[cloudJobId];
-        if (!state) throw new Error('Server lost the Laser update request');
-        savePartial(vehicle, settings(), state);
-        const done = state.status === 'done';
-        GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId,
-          stage:state.message || 'Validating new Laser link', progress:state.progress || 3,
-          startedAt:state.startedAt || state.createdAt || Date.now(), completedAt:done ? Date.now() : null });
-        render();
-        if (done) return;
-        if (state.status === 'error') throw new Error(state.message || 'Laser link was rejected');
-      }
-      throw new Error('Timed out while validating the Laser link');
+      const response = await new Promise((resolve, reject) => GM_xmlhttpRequest({
+        method:'POST', url:LASER_UPDATE_ENDPOINT, timeout:120000,
+        headers:{ 'Content-Type':'application/json' },
+        data:JSON.stringify({ vin:vehicle.vin, mileage:vehicle.mileage, zip, laserUrl:parsed.href }),
+        onload:(reply) => {
+          let payload = {}; try { payload = JSON.parse(reply.responseText || '{}'); } catch (_) {}
+          if (reply.status >= 200 && reply.status < 300 && payload.status === 'done') resolve(payload);
+          else reject(new Error(payload.message || `Laser server error ${reply.status}`));
+        },
+        onerror:() => reject(new Error('Could not reach the secure Laser update service')),
+        ontimeout:() => reject(new Error('Laser link validation timed out')),
+      }));
+      savePartial(vehicle, settings(), response);
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:response.message || 'Laser link updated',
+        progress:100, startedAt:Date.now(), completedAt:Date.now() });
+      render(response.message || 'Laser link updated · KBB received');
     } catch (error) {
       GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, completedAt:Date.now(), error:error.message });
       render(error.message);
