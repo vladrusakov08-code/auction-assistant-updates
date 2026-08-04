@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.7
+// @version      2.7.8
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3180,6 +3180,7 @@
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
   const LASER_UPDATE_ENDPOINT = 'https://vordtools-kbb.147-182-233-195.sslip.io/laser-auth';
+  const KBB_DIRECT_ENDPOINT = 'https://vordtools-kbb.147-182-233-195.sslip.io/kbb';
   const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
   const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
@@ -3515,6 +3516,20 @@
       GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, completedAt:Date.now(), error:error.message });
       render(error.message);
     }
+  }
+  async function requestDirectKbb(vehicle, zip) {
+    return new Promise((resolve, reject) => GM_xmlhttpRequest({
+      method:'POST', url:KBB_DIRECT_ENDPOINT, timeout:90000,
+      headers:{ 'Content-Type':'application/json' },
+      data:JSON.stringify({ vin:vehicle.vin, mileage:vehicle.mileage, zip }),
+      onload:(reply) => {
+        let payload = {}; try { payload = JSON.parse(reply.responseText || '{}'); } catch (_) {}
+        if (reply.status >= 200 && reply.status < 300 && payload.status === 'done') resolve(payload);
+        else reject(new Error(payload.message || `KBB server error ${reply.status}`));
+      },
+      onerror:() => reject(new Error('Direct KBB server connection failed')),
+      ontimeout:() => reject(new Error('Direct KBB request timed out')),
+    }));
   }
   function carfaxHtmlToText(html = '') {
     const withImageLabels = html.replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, ' $1 ');
@@ -4995,6 +5010,16 @@
     render();
     try {
       if (mode === 'both') startCarfaxValue(vehicle, config.zip);
+      try {
+        const direct = await requestDirectKbb(vehicle, config.zip);
+        savePartial(vehicle, config, direct);
+        GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:direct.message || 'KBB received',
+          progress:100, startedAt:Date.now(), completedAt:Date.now() });
+        render();
+        return;
+      } catch (_) {
+        // Keep the shared queue as an automatic fallback if the direct route is unavailable.
+      }
       let cloudJobId;
       try {
         cloudJobId = await enqueueSharedKbb(vehicle, config.zip);

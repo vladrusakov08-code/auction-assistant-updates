@@ -1,6 +1,6 @@
 {
-  "version": "2.7.7",
+  "version": "2.7.8",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-08-03T19:30:00-07:00",
-  "notes": "When a Laser session expires, show an Update Laser link button; paste a fresh History URL and the server validates, saves, and retries KBB automatically"
+  "releasedAt": "2026-08-03T19:55:00-07:00",
+  "notes": "Send KBB directly to the always-on server for a much faster response; retain the shared queue as automatic fallback without adding Laser requests"
 }
