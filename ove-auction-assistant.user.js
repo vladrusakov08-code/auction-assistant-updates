@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.5
+// @version      2.7.6
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3152,7 +3152,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.5';
+  const SCRIPT_VERSION = '2.7.6';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3480,7 +3480,6 @@
       .sort((a,b) => a.createdAt - b.createdAt)[0];
     return attached?.id || id;
   }
-
   function carfaxHtmlToText(html = '') {
     const withImageLabels = html.replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, ' $1 ');
     const spaced = withImageLabels.replace(/<[^>]+>/g, ' ');
@@ -4950,28 +4949,18 @@
       return;
     }
     GM_setValue(`oveKbbPrivateResult:${vehicle.vin}`, null);
-    GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Checking local KBB Bridge', progress:2, startedAt:Date.now() });
+    GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Connecting to server KBB', progress:2, startedAt:Date.now() });
     render();
     try {
-      if (mode === 'both') startCarfax(vehicle);
-      try {
-        await bridge('GET');
-        await runLocalKbb(vehicle, config);
-        return;
-      } catch (localError) {
-        if (!/not running|did not respond|network/i.test(localError.message || '')) throw localError;
-      }
+      if (mode === 'both') startCarfaxValue(vehicle, config.zip);
       let cloudJobId;
       try {
         cloudJobId = await enqueueSharedKbb(vehicle, config.zip);
       } catch (cloudError) {
-        if (cloudError.status === 429 || /quota|too many requests|resource_exhausted/i.test(cloudError.message || '')) {
-          await runLocalKbb(vehicle, config, cloudError.message);
-          return;
-        }
-        throw cloudError;
+        try { await runLocalKbb(vehicle, config, cloudError.message); return; }
+        catch (_) { throw cloudError; }
       }
-      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage:'Waiting in KBB queue', progress:3, startedAt:Date.now() });
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage:'Waiting in server KBB queue', progress:3, startedAt:Date.now() });
       const deadline = Date.now() + 12 * 60 * 1000;
       while (Date.now() < deadline) {
         await sleep(5000);
@@ -4985,7 +4974,7 @@
           ? (queue.active?.id && queue.active.id !== cloudJobId
               ? `KBB busy · another vehicle in process · queue position ${Math.max(1, position + 1)}`
               : (position >= 0 ? `In queue · position ${position + 1}` : 'Waiting in KBB queue'))
-          : (state.message || 'KBB in progress on Vlad’s Mac');
+          : (state.message || 'KBB in progress on VordTools server');
         GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId, stage, progress:state.progress || 3,
           eta:state.eta, startedAt:state.startedAt || state.createdAt || Date.now(), completedAt:done ? Date.now() : null });
         render();
