@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.8
+// @version      2.7.9
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -28,6 +28,7 @@
 // @connect      nominatim.openstreetmap.org
 // @connect      router.project-osrm.org
 // @connect      raw.githubusercontent.com
+// @connect      vordtools-kbb.147-182-233-195.sslip.io
 // @updateURL    https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js
 // @connect      script.google.com
@@ -3152,7 +3153,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.6';
+  const SCRIPT_VERSION = '2.7.9';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
