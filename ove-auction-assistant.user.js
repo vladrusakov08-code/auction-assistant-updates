@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.6
+// @version      2.7.7
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3480,6 +3480,54 @@
       .sort((a,b) => a.createdAt - b.createdAt)[0];
     return attached?.id || id;
   }
+  async function enqueueLaserLinkUpdate(vehicle, zip, laserUrl) {
+    const id = `${Date.now()}-laser-${Math.random().toString(36).slice(2,8)}`;
+    await mutateSharedKbbQueue((queue) => {
+      const requestedBy = GM_getValue('vin_marker_active_profile_v1', '') || 'user';
+      const now = Date.now();
+      queue.jobs[id] = { id, ...vehicle, zip, action:'updateLaserAuth', laserUrl,
+        status:'queued', message:'Validating new Laser link', requestedBy, createdAt:now, updatedAt:now };
+      queue.pending.push(id);
+    });
+    return id;
+  }
+
+  async function updateLaserLink(vehicle, zip) {
+    const laserUrl = window.prompt('Paste the complete fresh Laser History URL:');
+    if (!laserUrl) return;
+    let parsed;
+    try { parsed = new URL(laserUrl.trim()); }
+    catch (_) { render('Paste the complete Laser History URL.'); return; }
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'prd.laserappraiserservices.com' ||
+        !parsed.pathname.endsWith('/wdVinList.jsp') || !parsed.searchParams.get('security')) {
+      render('This is not a valid Laser History URL.'); return;
+    }
+    try {
+      const cloudJobId = await enqueueLaserLinkUpdate(vehicle, zip, parsed.href);
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId,
+        stage:'Validating new Laser link on server', progress:3, startedAt:Date.now() });
+      render();
+      const deadline = Date.now() + 3 * 60 * 1000;
+      while (Date.now() < deadline) {
+        await sleep(3000);
+        const { state:queue } = await readSharedKbbQueue();
+        const state = queue.jobs?.[cloudJobId];
+        if (!state) throw new Error('Server lost the Laser update request');
+        savePartial(vehicle, settings(), state);
+        const done = state.status === 'done';
+        GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, cloudJobId,
+          stage:state.message || 'Validating new Laser link', progress:state.progress || 3,
+          startedAt:state.startedAt || state.createdAt || Date.now(), completedAt:done ? Date.now() : null });
+        render();
+        if (done) return;
+        if (state.status === 'error') throw new Error(state.message || 'Laser link was rejected');
+      }
+      throw new Error('Timed out while validating the Laser link');
+    } catch (error) {
+      GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, completedAt:Date.now(), error:error.message });
+      render(error.message);
+    }
+  }
   function carfaxHtmlToText(html = '') {
     const withImageLabels = html.replace(/<img\b[^>]*\balt=["']([^"']+)["'][^>]*>/gi, ' $1 ');
     const spaced = withImageLabels.replace(/<[^>]+>/g, ' ');
@@ -4040,6 +4088,7 @@
       #ove-kbb-panel .deal-profit .deal-stat.negative .value{color:#bd2c2c}
       #ove-kbb-panel .miles .value{font-size:18px}#ove-kbb-panel button{border:0;border-radius:9px;cursor:pointer;font-weight:750}
       #ove-kbb-run{width:100%;padding:11px;margin-top:11px;background:#2864eb;color:#fff;font-size:15px}
+      #ove-laser-link-update{width:100%;padding:10px;margin-top:9px;background:#b45309;color:#fff;font-size:13px}
       #ove-kbb-settings{background:transparent;color:#556070;padding:3px 6px}
       #ove-save-vehicle{background:transparent;color:#d7264e;padding:3px 6px;font-size:21px;line-height:1}
       #ove-save-vehicle.is-saved{color:#d7264e}
@@ -4588,6 +4637,8 @@
     const result = vehicle.vin ? GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) : null;
     const job = vehicle.vin ? GM_getValue(kbbJobKey(vehicle.vin), null) : null;
     const active = job?.vin === vehicle.vin && !job.completedAt;
+    const laserExpired = /laser.*(?:session|link).*(?:expired|fresh|update)|(?:expired|fresh).*(?:laser|history url)/i
+      .test(`${message || ''} ${job?.error || ''} ${job?.stage || ''}`);
     const values = result?.values || {};
     const manualState = GM_getValue(MANUAL_VEHICLE_KEY, {}) || {};
     let carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null);
@@ -4687,9 +4738,12 @@
       ${dealMarkup(vehicle.vin, values, effectiveCarfax)}
       <div class="lookup-actions"><button id="ove-carfax-run">CARFAX</button><button id="ove-kbb-only-run">KBB</button></div>
       <button id="ove-kbb-run">${result || carfax ? 'Refresh KBB + CARFAX' : 'Check VIN'}</button>
+      ${laserExpired ? '<button id="ove-laser-link-update">Update Laser link</button>' : ''}
       ${active ? `<div class="progress"><i style="width:${Math.min(100, progress)}%"></i></div>` : ''}
       <div id="ove-kbb-status" class="muted">${message || (active ? `${job.stage || 'Working'}${job.eta ? ` · ~${job.eta}s` : ''}` :
         `Color: ${vehicle.color} · ZIP: ${config.zip}`)}</div>`;
+    const laserUpdateButton = document.getElementById('ove-laser-link-update');
+    if (laserUpdateButton) laserUpdateButton.onclick = () => updateLaserLink(vehicle, config.zip);
     const saveButton = document.getElementById('ove-save-vehicle');
     if (saveButton) {
       saveButton.classList.toggle('is-saved', Boolean(sheetSaved));
