@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.9
+// @version      2.7.10
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3176,7 +3176,7 @@
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
   const SHEET_SAVE_SETTINGS_KEY = 'auctionAssistantSheetSaveSettingsV1';
   const SHEET_SAVE_WEB_APP_URL =
-    'https://script.google.com/macros/s/AKfycbyAbQ1vHvAMqpn5dOG0CKwPZltXNYEta_DBpPsrMnfynGyz9l8pw6DSxO1OyA1IAHBU/exec';
+    'https://script.google.com/macros/s/AKfycbzkV9qb3-vKPyDl3xZsMxq8GKTMl0kC2WcfY86GvTWPV6_T4BIg_vBGsloqnBVat0KS/exec';
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
