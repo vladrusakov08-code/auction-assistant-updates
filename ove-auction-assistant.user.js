@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.10
+// @version      2.7.11
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3031,8 +3031,12 @@
        START
     ======================================== */
 
+    const markerIsDetailPage = () =>
+        ((SITE === 'manheim' || SITE === 'ove') && /\/details\//i.test(`${location.pathname}${location.hash}`)) ||
+        (SITE === 'copart' && /\/lot\/\d+/i.test(location.pathname));
+
     updateCounter();
-    paintSeenVins();
+    if (!markerIsDetailPage()) paintSeenVins();
 
     window.addEventListener(
         'storage',
@@ -3096,6 +3100,11 @@
 
     const observer =
         new MutationObserver(mutations => {
+            // Detail pages contain large, constantly changing galleries. VIN
+            // markers are only useful on search results, so never rescan a
+            // complete detail DOM after gallery/layout mutations.
+            if (markerIsDetailPage()) return;
+
             const hasExternalChange = mutations.some(mutation => {
                 const target = mutation.target?.nodeType === Node.ELEMENT_NODE
                     ? mutation.target
@@ -3153,7 +3162,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.9';
+  const SCRIPT_VERSION = '2.7.11';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4293,6 +4302,22 @@
   const DELIVERY_RATE_VERSION = '2026-07-dealer-v3';
   const deliveryLookups = new Map();
   function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
+  function compactPageContext() {
+    const selector = [
+      'h1','h2','h3','address','button',
+      '[class*="location" i]','[class*="auction" i]','[class*="pickup" i]',
+      '[class*="announcement" i]','[class*="title" i]',
+      '[data-testid*="location" i]','[aria-label*="location" i]'
+    ].join(',');
+    const visible = [...document.querySelectorAll(selector)]
+      .filter((node) => node !== document.body && node !== document.documentElement && node.childElementCount < 80)
+      .slice(0, 160)
+      .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600))
+      .filter(Boolean).join('\n');
+    const embedded = [...document.querySelectorAll('script[type="application/ld+json"],script#__NEXT_DATA__')]
+      .slice(0, 8).map((node) => (node.textContent || '').slice(0, 200000)).join('\n');
+    return { text:visible.slice(0, 120000), embedded:embedded.slice(0, 800000) };
+  }
   function jsonRequest(url) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
       method:'GET', url, timeout:12000,
@@ -4308,8 +4333,11 @@
     }));
   }
   function readDeliveryOrigin() {
-    const text = document.body?.innerText || '';
-    const html = document.documentElement?.innerHTML || '';
+    // Avoid serializing the complete auction page. Manheim/Copart galleries
+    // can be hundreds of megabytes after several vehicles are opened.
+    const context = compactPageContext();
+    const text = context.text;
+    const html = context.embedded;
     let labeledZip = text.match(/(?:Pickup|Vehicle Location|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,180}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] ||
       html.match(/["'](?:postalCode|postal_code|zipCode|zip_code|zip)["']\s*:\s*["']?(\d{5})(?:-\d{4})?/i)?.[1] ||
       html.match(/(?:postalCode|postal_code|zipCode|zip_code|zip)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")?(\d{5})(?:-\d{4})?/i)?.[1] || '';
@@ -4392,7 +4420,7 @@
     return 'sedan';
   }
   function deliveryRunningStatus() {
-    const text = document.body?.innerText || '';
+    const text = compactPageContext().text;
     if (/\b(?:non[- ]?run(?:ner|ning)?|inoperable|inop|stationary|does not (?:run|start)|won't (?:run|start)|no start)\b/i.test(text))
       return false;
     return true;
@@ -4420,7 +4448,7 @@
     return match ? match[1] : 0;
   }
   function copartTitleIsClean() {
-    const text = document.body?.innerText || '';
+    const text = compactPageContext().text;
     if (/\b(?:salvage|non-repairable|junk|parts only|certificate of destruction)\b/i.test(text)) return false;
     return /\b(?:clean title|clear title|certificate of title)\b/i.test(text);
   }
@@ -4459,7 +4487,7 @@
     ]);
   }
   function isManheimSimulcast() {
-    const page = `${location.href} ${document.body?.innerText || ''}`;
+    const page = `${location.href} ${compactPageContext().text}`;
     return /(?:\/Simulcast\b|Simulcast Live|Enter Sale|Lane\/Run|Proxy Bid)/i.test(page);
   }
   function manheimStandardBuyerFee(price) {
