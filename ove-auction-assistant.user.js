@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.11
+// @version      2.7.12
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -1997,6 +1997,11 @@
     }
 
     function paintSeenVins() {
+        // VIN colouring/filtering belongs to result lists. Running it on a
+        // detail page walks the complete photo-gallery DOM and can freeze the
+        // tab when another tab updates shared marker state.
+        if (markerIsDetailPage()) return;
+
         refreshSharedVinState();
 
         paintedElementStyles.forEach((original, element) => {
@@ -3031,9 +3036,10 @@
        START
     ======================================== */
 
-    const markerIsDetailPage = () =>
-        ((SITE === 'manheim' || SITE === 'ove') && /\/details\//i.test(`${location.pathname}${location.hash}`)) ||
-        (SITE === 'copart' && /\/lot\/\d+/i.test(location.pathname));
+    function markerIsDetailPage() {
+        return ((SITE === 'manheim' || SITE === 'ove') && /\/details\//i.test(`${location.pathname}${location.hash}`)) ||
+            (SITE === 'copart' && /\/lot\/\d+/i.test(location.pathname));
+    }
 
     updateCounter();
     if (!markerIsDetailPage()) paintSeenVins();
@@ -3126,13 +3132,15 @@
             scheduleMarkerPaint();
         });
 
-    observer.observe(
-        document.body,
-        {
-            childList: true,
-            subtree: true
-        }
-    );
+    if (!markerIsDetailPage()) {
+        observer.observe(
+            document.body,
+            {
+                childList: true,
+                subtree: true
+            }
+        );
+    }
 
     const markerSyncInterval = setInterval(
         () => {
@@ -3162,7 +3170,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.11';
+  const SCRIPT_VERSION = '2.7.12';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3754,14 +3762,38 @@
     return ['beige','black','blue','brown','burgundy','gold','gray','green','orange','pink',
       'purple','red','silver','white','yellow'].find((item) => text.includes(item)) || 'white';
   }
+  let auctionTextCache = { url:'', at:0, text:'' };
+  function auctionPageText() {
+    const now = Date.now();
+    if (auctionTextCache.url === location.href && now - auctionTextCache.at < 2500)
+      return auctionTextCache.text;
+    const selectors = [
+      'h1','h2','h3','[role="heading"]','address',
+      '[class*="vehicle" i]','[class*="mileage" i]','[class*="odometer" i]',
+      '[class*="location" i]','[class*="lane" i]','[class*="sale" i]',
+      '[class*="announcement" i]','[data-testid*="vehicle" i]',
+      '[data-testid*="mileage" i]','[data-testid*="location" i]'
+    ].join(',');
+    const pieces = [...document.querySelectorAll(selectors)]
+      .filter((node) => node !== document.body && node !== document.documentElement && node.childElementCount < 100)
+      .slice(0, 220)
+      .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 1000))
+      .filter(Boolean);
+    // textContent avoids the forced layout and massive temporary allocation
+    // caused by body.innerText on Manheim's legacy gallery pages.
+    let text = pieces.join('\n');
+    if (text.length < 120) text = (document.body?.textContent || '').slice(0, 300000);
+    auctionTextCache = { url:location.href, at:now, text:text.slice(0, 300000) };
+    return auctionTextCache.text;
+  }
   function findVin() {
-    const pageText = (document.body?.innerText || '').replace(/[\u200B-\u200D\uFEFF]/g, '');
     const fromUrl = location.href.match(/details\/([A-HJ-NPR-Z0-9]{17})(?:\/|$)/i)?.[1] ||
       location.href.match(/[?&#](?:vin|VIN)=([A-HJ-NPR-Z0-9]{17})(?:&|#|$)/)?.[1] ||
       location.href.match(/\/lot\/(?:\d+\/)?[^/?#]*?([A-HJ-NPR-Z0-9]{17})(?:[/?#]|$)/i)?.[1] || '';
     if (fromUrl) return fromUrl.toUpperCase();
     const detailPage = /(?:#\/details\/|\/details\/|\/lot\/|\/vehicle\/)/i.test(location.href);
     if (IS_SUPPORTED_AUCTION && !detailPage) return '';
+    const pageText = auctionPageText().replace(/[\u200B-\u200D\uFEFF]/g, '');
     const labeled = pageText.match(/(?:VIN|Vehicle Identification Number)\s*[:#]?\s*([A-HJ-NPR-Z0-9]{17})/i)?.[1] || '';
     if (labeled) return labeled.toUpperCase();
     if (AUCTION_SITE === 'COPART') {
@@ -3842,7 +3874,7 @@
         manual:true
       };
     }
-    const text = document.body?.innerText || '';
+    const text = auctionPageText();
     const mmrLink = [...document.querySelectorAll('a[href*="mmr.manheim.com"]')]
       .find((a) => !vin || a.href.includes(`vin=${vin}`));
     let mmr = null;
@@ -3905,7 +3937,7 @@
     return { ...saved, webAppUrl:SHEET_SAVE_WEB_APP_URL };
   }
   function readLaneRun() {
-    const text = document.body?.innerText || '';
+    const text = auctionPageText();
     return text.match(/Lane\s*\/\s*Item\s*[:#-]?\s*([^\n]+)/i)?.[1]?.trim() ||
       text.match(/Lane\s*\/\s*Run\s*[:#-]?\s*([^\n]+)/i)?.[1]?.trim() || '';
   }
@@ -3924,7 +3956,7 @@
     return `${String(value).padStart(2, '0')}:${String(Number(minute || 0)).padStart(2, '0')}`;
   }
   function readAuctionSchedule() {
-    const text = document.body?.innerText || '';
+    const text = auctionPageText();
     const laneRun = readLaneRun();
     const lane = laneRun.split(/[\/-]/)[0]?.trim() || '';
     let date = ''; let time = '';
