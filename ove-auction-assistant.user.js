@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.12
+// @version      2.7.13
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3109,7 +3109,11 @@
             // Detail pages contain large, constantly changing galleries. VIN
             // markers are only useful on search results, so never rescan a
             // complete detail DOM after gallery/layout mutations.
-            if (markerIsDetailPage()) return;
+            if (markerIsDetailPage()) {
+                observer.disconnect();
+                markerObserverActive = false;
+                return;
+            }
 
             const hasExternalChange = mutations.some(mutation => {
                 const target = mutation.target?.nodeType === Node.ELEMENT_NODE
@@ -3132,7 +3136,14 @@
             scheduleMarkerPaint();
         });
 
-    if (!markerIsDetailPage()) {
+    let markerObserverActive = false;
+    function reconcileMarkerObserver() {
+        if (markerIsDetailPage()) {
+            if (markerObserverActive) observer.disconnect();
+            markerObserverActive = false;
+            return;
+        }
+        if (markerObserverActive) return;
         observer.observe(
             document.body,
             {
@@ -3140,7 +3151,11 @@
                 subtree: true
             }
         );
+        markerObserverActive = true;
     }
+    reconcileMarkerObserver();
+    window.addEventListener('hashchange', reconcileMarkerObserver);
+    window.addEventListener('popstate', reconcileMarkerObserver);
 
     const markerSyncInterval = setInterval(
         () => {
@@ -3152,6 +3167,8 @@
     window.addEventListener('pagehide', () => {
         markerStopped = true;
         observer.disconnect();
+        window.removeEventListener('hashchange', reconcileMarkerObserver);
+        window.removeEventListener('popstate', reconcileMarkerObserver);
         clearTimeout(mutationTimer);
         clearTimeout(copartAutoSyncTimer);
         filterReconcileTimers.forEach(clearTimeout);
@@ -3170,7 +3187,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.12';
+  const SCRIPT_VERSION = '2.7.13';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3763,27 +3780,16 @@
       'purple','red','silver','white','yellow'].find((item) => text.includes(item)) || 'white';
   }
   let auctionTextCache = { url:'', at:0, text:'' };
-  function auctionPageText() {
+  function auctionPageText(force = false) {
     const now = Date.now();
-    if (auctionTextCache.url === location.href && now - auctionTextCache.at < 2500)
+    if (!force && auctionTextCache.url === location.href && now - auctionTextCache.at < 5000)
       return auctionTextCache.text;
-    const selectors = [
-      'h1','h2','h3','[role="heading"]','address',
-      '[class*="vehicle" i]','[class*="mileage" i]','[class*="odometer" i]',
-      '[class*="location" i]','[class*="lane" i]','[class*="sale" i]',
-      '[class*="announcement" i]','[data-testid*="vehicle" i]',
-      '[data-testid*="mileage" i]','[data-testid*="location" i]'
-    ].join(',');
-    const pieces = [...document.querySelectorAll(selectors)]
-      .filter((node) => node !== document.body && node !== document.documentElement && node.childElementCount < 100)
-      .slice(0, 220)
-      .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 1000))
-      .filter(Boolean);
-    // textContent avoids the forced layout and massive temporary allocation
-    // caused by body.innerText on Manheim's legacy gallery pages.
-    let text = pieces.join('\n');
-    if (text.length < 120) text = (document.body?.textContent || '').slice(0, 300000);
-    auctionTextCache = { url:location.href, at:now, text:text.slice(0, 300000) };
+    // One textContent snapshot is cheaper than running many broad attribute
+    // selectors across Manheim's very large legacy gallery DOM. Unlike
+    // innerText it does not force layout. The result is cached and bounded.
+    const root = document.querySelector('main,[role="main"],#main-content') || document.body;
+    const text = (root?.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
+    auctionTextCache = { url:location.href, at:now, text:text.slice(0, 500000) };
     return auctionTextCache.text;
   }
   function findVin() {
@@ -5144,6 +5150,7 @@
   }
   refreshIfVehicleChanged(true);
   let helperMutationTimer;
+  const helperIsDetailPage = () => /(?:#\/details\/|\/details\/|\/lot\/|\/vehicle\/)/i.test(location.href);
   const helperObserver = new MutationObserver((mutations) => {
     if (helperStopped || helperVehicleStable) return;
     const hasExternalChange = mutations.some((mutation) => {
@@ -5156,15 +5163,38 @@
     clearTimeout(helperMutationTimer);
     helperMutationTimer = setTimeout(() => refreshIfVehicleChanged(false), 900);
   });
-  helperObserver.observe(document.body, { childList: true, subtree: true });
+  // Auction detail galleries mutate continuously. Watching their full subtree
+  // keeps Chrome busy even when our panel is idle, so detail pages use a small
+  // bounded startup poll below instead of a permanent MutationObserver.
+  let helperObserverActive = false;
+  if (!helperIsDetailPage()) {
+    helperObserver.observe(document.body, { childList: true, subtree: true });
+    helperObserverActive = true;
+  }
+  let helperLoadAttempts = 0;
   const helperUrlInterval = setInterval(() => {
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       lastVehicleSignature = '';
       helperVehicleStable = false;
+      helperLoadAttempts = 0;
+      auctionTextCache = { url:'', at:0, text:'' };
+      if (helperIsDetailPage() && helperObserverActive) {
+        helperObserver.disconnect();
+        helperObserverActive = false;
+      } else if (!helperIsDetailPage() && !helperObserverActive) {
+        helperObserver.observe(document.body, { childList:true, subtree:true });
+        helperObserverActive = true;
+      }
       refreshIfVehicleChanged(true);
+      return;
     }
-  }, 1200);
+    if (helperIsDetailPage() && !helperVehicleStable && helperLoadAttempts < 6) {
+      helperLoadAttempts += 1;
+      auctionTextCache = { url:'', at:0, text:'' };
+      refreshIfVehicleChanged(false);
+    }
+  }, 1500);
   window.addEventListener('pagehide', () => {
     helperStopped = true;
     helperObserver.disconnect();
