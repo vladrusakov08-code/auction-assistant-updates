@@ -1,6 +1,6 @@
 {
-  "version": "2.7.14",
+  "version": "2.7.15",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-08-06T18:20:00-07:00",
-  "notes": "Fix legacy Manheim mileage detection and eliminate full gallery DOM scans that could freeze the tab"
+  "releasedAt": "2026-08-06T18:18:00-07:00",
+  "notes": "Prevent oversized Manheim page containers from being used as the vehicle title"
 }

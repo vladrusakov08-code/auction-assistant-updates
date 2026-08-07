@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.14
+// @version      2.7.15
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3187,7 +3187,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.14';
+  const SCRIPT_VERSION = '2.7.15';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3783,7 +3783,8 @@
   function manheimDetailSummary() {
     const vin = location.href.match(/details\/([A-HJ-NPR-Z0-9]{17})(?:\/|$)/i)?.[1]?.toUpperCase() || '';
     const parts = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
-      .slice(0, 16).map((node) => node.textContent || '').filter(Boolean);
+      .slice(0, 16).map((node) => (node.textContent || '').trim())
+      .filter((value) => value && value.length <= 160);
     if (vin) {
       try {
         const match = document.evaluate(
@@ -3920,16 +3921,20 @@
       readMileageFromDom(vin, text) ||
       (manualBelongsHere && String(manual.vin || '').toUpperCase() === vin ? String(manual.mileage || '') : '');
     const visibleHeading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
-      .find((element) => element.getClientRects().length && /\b(?:19|20)\d{2}\s+[A-Z0-9]/i.test(element.textContent || ''))
-      ?.textContent?.trim();
+      .find((element) => {
+        const value = (element.textContent || '').replace(/\s+/g, ' ').trim();
+        return element.getClientRects().length && value.length <= 140 &&
+          /\b(?:19|20)\d{2}\s+[A-Z0-9]/i.test(value);
+      })?.textContent?.replace(/\s+/g, ' ').trim();
     // Manheim's "Provided:" value is often an abbreviated decoder name
     // (for example "TOYOTA COR LE LE"). Prefer the full listing title shown
     // immediately above it and use the decoder name only as a final fallback.
     const listingTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}[^\n]{3,90})\s*\n\s*Provided\s*:/im)?.[1]?.trim();
     const generalTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'\/-]{3,70})\s*(?:\n|$)/im)?.[1]?.trim();
-    const title = visibleHeading || listingTitle || generalTitle ||
+    const rawTitle = visibleHeading || listingTitle || generalTitle ||
       text.match(/Provided:\s*([^\n]+)/i)?.[1] ||
       (!detectedVin && manual.vin ? 'Manual VIN lookup' : `${AUCTION_SITE} vehicle`);
+    const title = String(rawTitle || `${AUCTION_SITE} vehicle`).replace(/\s+/g, ' ').trim().slice(0, 140);
     const color = normalizeColor(mmr?.searchParams.get('color') ||
       text.match(/Exterior(?: Base)? Color\s*[:\n]?\s*([^\n]+)/i)?.[1] ||
       text.match(/Color\s*[:\n]?\s*(Beige|Black|Blue|Brown|Burgundy|Gold|Gray|Grey|Green|Orange|Pink|Purple|Red|Silver|White|Yellow)/i)?.[1] || '');
