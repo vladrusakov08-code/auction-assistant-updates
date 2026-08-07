@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.13
+// @version      2.7.14
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3187,7 +3187,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.13';
+  const SCRIPT_VERSION = '2.7.14';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3780,6 +3780,26 @@
       'purple','red','silver','white','yellow'].find((item) => text.includes(item)) || 'white';
   }
   let auctionTextCache = { url:'', at:0, text:'' };
+  function manheimDetailSummary() {
+    const vin = location.href.match(/details\/([A-HJ-NPR-Z0-9]{17})(?:\/|$)/i)?.[1]?.toUpperCase() || '';
+    const parts = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
+      .slice(0, 16).map((node) => node.textContent || '').filter(Boolean);
+    if (vin) {
+      try {
+        const match = document.evaluate(
+          `//*[contains(text(), "${vin}")]`, document, null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE, null
+        ).singleNodeValue;
+        let node = match;
+        for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+          const nearby = node.textContent || '';
+          if (nearby.length <= 5000) parts.push(nearby);
+          if (/\b[\d,]+\s*(?:mi|miles)\b/i.test(nearby) && /\b(?:19|20)\d{2}\b/.test(nearby)) break;
+        }
+      } catch (_) {}
+    }
+    return parts.join('\n').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
+  }
   function auctionPageText(force = false) {
     const now = Date.now();
     if (!force && auctionTextCache.url === location.href && now - auctionTextCache.at < 5000)
@@ -3787,8 +3807,14 @@
     // One textContent snapshot is cheaper than running many broad attribute
     // selectors across Manheim's very large legacy gallery DOM. Unlike
     // innerText it does not force layout. The result is cached and bounded.
+    const legacyManheimDetail = AUCTION_SITE === 'MANHEIM' && /landingPage#\/details\//i.test(location.href);
     const root = document.querySelector('main,[role="main"],#main-content') || document.body;
-    const text = (root?.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
+    // The legacy Manheim gallery may contain hundreds of MB of mounted photo
+    // components. Never serialize its complete DOM: read only the heading and
+    // the small ancestor containing the current VIN/odometer.
+    const text = legacyManheimDetail
+      ? manheimDetailSummary()
+      : (root?.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
     auctionTextCache = { url:location.href, at:now, text:text.slice(0, 500000) };
     return auctionTextCache.text;
   }
@@ -3826,8 +3852,13 @@
     const exactLabel = text.match(/(?:Odometer|Mileage|Odo)\s*[:#\-]\s*([\d,]+)(?:\s*(?:mi|miles))?/i)?.[1];
     if (exactLabel !== undefined) return exactLabel;
     if (AUCTION_SITE === 'MANHEIM' && vin) {
-      const nearCurrentVin = text.match(new RegExp(`${vin}[\\s\\S]{0,100}?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\\s*(?:mi|miles)(?:[^a-z]|$)`, 'i'))?.[1];
+      const nearCurrentVin = text.match(new RegExp(`${vin}[\\s\\S]{0,240}?([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{3,7})\\s*(?:mi|miles)(?:[^a-z]|$)`, 'i'))?.[1];
       if (nearCurrentVin !== undefined) return nearCurrentVin;
+      // Do not fall through to broad body scans on Manheim details. Its legacy
+      // gallery keeps a huge virtual DOM mounted and those scans are what made
+      // the tab freeze or turn white.
+      return text.match(/(?:Mileage|Odometer|Odo)\s*[:#\-\n]?\s*([\d,]+)/i)?.[1] ||
+        text.match(/(?:^|[^\d])([0-9]{1,3}(?:,[0-9]{3})+|[0-9]{4,7})\s*(?:mi|miles)(?:[^a-z]|$)/im)?.[1] || '';
     }
     if (AUCTION_SITE === 'COPART') {
       const odometerLabel = [...document.querySelectorAll('body *')].find((element) =>

@@ -1,6 +1,6 @@
 {
-  "version": "2.7.13",
+  "version": "2.7.14",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-08-06T17:15:00-07:00",
-  "notes": "Disable persistent DOM observers on Manheim detail galleries and use bounded lightweight vehicle detection"
+  "releasedAt": "2026-08-06T18:20:00-07:00",
+  "notes": "Fix legacy Manheim mileage detection and eliminate full gallery DOM scans that could freeze the tab"
 }
