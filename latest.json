@@ -1,6 +1,6 @@
 {
-  "version": "2.7.23",
+  "version": "2.7.25",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-08-07T17:30:00-07:00",
-  "notes": "Fix shared Q/X/Y/Z auction columns, speed up saves, unify hearts, and read Manheim lane/time fields"
+  "releasedAt": "2026-08-08T15:10:00-07:00",
+  "notes": "Add Ivan profile in pink, shared team colours, and correct Who added column in all auction sheets"
 }
