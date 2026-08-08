@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.23
+// @version      2.7.25
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -89,6 +89,11 @@
             ? 'copartWorkerLots'
             : 'workerVins';
 
+    const IVAN_CLOUD_FIELD =
+        SITE === 'copart'
+            ? 'copartIvanLots'
+            : 'ivanVins';
+
     const UPDATED_CLOUD_FIELD =
         SITE === 'copart'
             ? 'copartUpdatedAt'
@@ -100,6 +105,9 @@
     const DAILY_WORKER_CLOUD_FIELD =
         SITE === 'copart' ? 'copartDailyWorkerMarks' : 'dailyWorkerMarks';
 
+    const DAILY_IVAN_CLOUD_FIELD =
+        SITE === 'copart' ? 'copartDailyIvanMarks' : 'dailyIvanMarks';
+
     const DAILY_STORAGE = `${SITE}_daily_marks_v1`;
     const ACTIVE_USER_STORAGE = 'vin_marker_active_profile_v1';
 
@@ -109,10 +117,13 @@
 
     const VLAD = 'vlad';
     const WORKER = 'worker';
+    const IVAN = 'ivan';
 
     const COLORS = {
         vlad: '#16843d',
         worker: '#7b2cbf',
+        ivan: '#e83e8c',
+        vadimIvan: 'linear-gradient(90deg, #7b2cbf 0%, #7b2cbf 50%, #e83e8c 50%, #e83e8c 100%)',
         both: '#d60000'
     };
 
@@ -171,14 +182,16 @@
 
     let vladVins = new Set();
     let workerVins = new Set();
+    let ivanVins = new Set();
     let dailyVladMarks = new Set();
     let dailyWorkerMarks = new Set();
+    let dailyIvanMarks = new Set();
     let statsMode = 'today';
     let hideMode = 'show';
     const filteredCards = new Set();
     const paintedElementStyles = new Map();
     let activeUser = GM_getValue(ACTIVE_USER_STORAGE, '');
-    if (![VLAD, WORKER].includes(activeUser)) activeUser = '';
+    if (![VLAD, WORKER, IVAN].includes(activeUser)) activeUser = '';
 
     let auth = loadSharedAuthentication();
     let cloudBusy = false;
@@ -228,11 +241,12 @@
         const saved = GM_getValue(DAILY_STORAGE, {}) || {};
         dailyVladMarks = new Set(Array.isArray(saved.vlad) ? saved.vlad.filter(validDailyMark) : []);
         dailyWorkerMarks = new Set(Array.isArray(saved.worker) ? saved.worker.filter(validDailyMark) : []);
+        dailyIvanMarks = new Set(Array.isArray(saved.ivan) ? saved.ivan.filter(validDailyMark) : []);
     }
 
     function saveDailyMarks() {
         GM_setValue(DAILY_STORAGE, {
-            vlad: [...dailyVladMarks], worker: [...dailyWorkerMarks]
+            vlad: [...dailyVladMarks], worker: [...dailyWorkerMarks], ivan: [...dailyIvanMarks]
         });
     }
 
@@ -334,6 +348,12 @@
             )
         );
 
+        ivanVins = new Set(
+            shared.ivan.filter(
+                validStoredIdentifier
+            )
+        );
+
         const alreadyMigrated =
             Boolean(
                 GM_getValue(
@@ -359,6 +379,11 @@
                     ? saved.worker
                     : [];
 
+            const savedIvan =
+                Array.isArray(saved.ivan)
+                    ? saved.ivan
+                    : [];
+
             savedVlad
                 .filter(validStoredIdentifier)
                 .forEach(vin => {
@@ -369,6 +394,12 @@
                 .filter(validStoredIdentifier)
                 .forEach(vin => {
                     workerVins.add(vin);
+                });
+
+            savedIvan
+                .filter(validStoredIdentifier)
+                .forEach(vin => {
+                    ivanVins.add(vin);
                 });
 
             const oldVins =
@@ -417,12 +448,17 @@
                 worker:
                     Array.isArray(parsed.worker)
                         ? parsed.worker
+                        : [],
+                ivan:
+                    Array.isArray(parsed.ivan)
+                        ? parsed.ivan
                         : []
             };
         } catch (_) {
             return {
                 vlad: [],
-                worker: []
+                worker: [],
+                ivan: []
             };
         }
     }
@@ -442,12 +478,19 @@
                 validStoredIdentifier
             )
         );
+
+        ivanVins = new Set(
+            shared.ivan.filter(
+                validStoredIdentifier
+            )
+        );
     }
 
     function saveLocalVinState() {
         const state = {
             vlad: [...vladVins],
-            worker: [...workerVins]
+            worker: [...workerVins],
+            ivan: [...ivanVins]
         };
 
         saveJson(
@@ -752,8 +795,15 @@
                     ]
                 ),
 
+                ivan: readStringArray(
+                    document.fields?.[
+                        IVAN_CLOUD_FIELD
+                    ]
+                ),
+
                 dailyVlad: readDailyArray(document.fields?.[DAILY_VLAD_CLOUD_FIELD]),
-                dailyWorker: readDailyArray(document.fields?.[DAILY_WORKER_CLOUD_FIELD])
+                dailyWorker: readDailyArray(document.fields?.[DAILY_WORKER_CLOUD_FIELD]),
+                dailyIvan: readDailyArray(document.fields?.[DAILY_IVAN_CLOUD_FIELD])
             };
 
         } catch (error) {
@@ -761,8 +811,10 @@
                 return {
                     vlad: [],
                     worker: [],
+                    ivan: [],
                     dailyVlad: [],
-                    dailyWorker: []
+                    dailyWorker: [],
+                    dailyIvan: []
                 };
             }
 
@@ -799,12 +851,16 @@
         const fieldPath =
             user === VLAD
                 ? VLAD_CLOUD_FIELD
-                : WORKER_CLOUD_FIELD;
+                : user === IVAN
+                    ? IVAN_CLOUD_FIELD
+                    : WORKER_CLOUD_FIELD;
 
         const dailyFieldPath =
             user === VLAD
                 ? DAILY_VLAD_CLOUD_FIELD
-                : DAILY_WORKER_CLOUD_FIELD;
+                : user === IVAN
+                    ? DAILY_IVAN_CLOUD_FIELD
+                    : DAILY_WORKER_CLOUD_FIELD;
 
         const fieldTransforms = [];
         if (unique.length) fieldTransforms.push({
@@ -847,7 +903,8 @@
 
     async function replaceCloudState(
         vlad,
-        worker
+        worker,
+        ivan
     ) {
         await ensureAuthentication();
 
@@ -866,6 +923,10 @@
                 ) +
                 '&updateMask.fieldPaths=' +
                 encodeURIComponent(
+                    IVAN_CLOUD_FIELD
+                ) +
+                '&updateMask.fieldPaths=' +
+                encodeURIComponent(
                     UPDATED_CLOUD_FIELD
                 ),
 
@@ -879,6 +940,9 @@
 
                     [WORKER_CLOUD_FIELD]:
                         stringArrayValue(worker),
+
+                    [IVAN_CLOUD_FIELD]:
+                        stringArrayValue(ivan),
 
                     [UPDATED_CLOUD_FIELD]: {
                         timestampValue:
@@ -1045,8 +1109,13 @@
                 workerVins.add(vin);
             });
 
+            cloud.ivan.forEach(vin => {
+                ivanVins.add(vin);
+            });
+
             (cloud.dailyVlad || []).forEach(mark => dailyVladMarks.add(mark));
             (cloud.dailyWorker || []).forEach(mark => dailyWorkerMarks.add(mark));
+            (cloud.dailyIvan || []).forEach(mark => dailyIvanMarks.add(mark));
             saveDailyMarks();
 
             saveLocalVinState();
@@ -1069,6 +1138,12 @@
                         !cloud.worker.includes(vin)
                 );
 
+            const missingIvan =
+                [...ivanVins].filter(
+                    vin =>
+                        !cloud.ivan.includes(vin)
+                );
+
             if (missingVlad.length) {
                 await appendVinsToCloud(
                     VLAD,
@@ -1083,9 +1158,17 @@
                 );
             }
 
+            if (missingIvan.length) {
+                await appendVinsToCloud(
+                    IVAN,
+                    missingIvan
+                );
+            }
+
             if (
                 missingVlad.length ||
-                missingWorker.length
+                missingWorker.length ||
+                missingIvan.length
             ) {
                 localStorage.setItem(
                     MIGRATION_STORAGE,
@@ -1726,12 +1809,14 @@
         const seenByWorker =
             workerVins.has(vin);
 
-        if (
-            seenByVlad &&
-            seenByWorker
-        ) {
+        const seenByIvan =
+            ivanVins.has(vin);
+
+        if (seenByVlad && (seenByWorker || seenByIvan)) {
             return COLORS.both;
         }
+
+        if (seenByWorker && seenByIvan) return COLORS.vadimIvan;
 
         if (seenByVlad) {
             return COLORS.vlad;
@@ -1740,6 +1825,8 @@
         if (seenByWorker) {
             return COLORS.worker;
         }
+
+        if (seenByIvan) return COLORS.ivan;
 
         return null;
     }
@@ -1776,12 +1863,21 @@
                 appearsInDaily(dailyWorkerMarks, identifier)
             );
 
-        if (seenByVlad && seenByWorker) {
+        const seenByIvan =
+            identifiers.some(identifier =>
+                ivanVins.has(identifier) ||
+                appearsInDaily(dailyIvanMarks, identifier)
+            );
+
+        if (seenByVlad && (seenByWorker || seenByIvan)) {
             return COLORS.both;
         }
 
+        if (seenByWorker && seenByIvan) return COLORS.vadimIvan;
+
         if (seenByVlad) return COLORS.vlad;
         if (seenByWorker) return COLORS.worker;
+        if (seenByIvan) return COLORS.ivan;
         return null;
     }
 
@@ -1831,11 +1927,16 @@
             const seenByWorker = identifiers.some(identifier =>
                 workerVins.has(identifier) || dailyContains(dailyWorkerMarks, identifier)
             );
+            const seenByIvan = identifiers.some(identifier =>
+                ivanVins.has(identifier) || dailyContains(dailyIvanMarks, identifier)
+            );
             const shouldHide = hideMode === 'all'
-                ? seenByVlad || seenByWorker
+                ? seenByVlad || seenByWorker || seenByIvan
                 : activeUser === VLAD
                     ? seenByVlad
-                    : activeUser === WORKER && seenByWorker;
+                    : activeUser === WORKER
+                        ? seenByWorker
+                        : activeUser === IVAN && seenByIvan;
             const card = item.card;
             const cardVins = card
                 ? new Set((card.textContent || '').match(VIN_REGEX) || [])
@@ -1882,7 +1983,7 @@
 
             if (identifiers.length < 2) return;
 
-            [vladVins, workerVins]
+            [vladVins, workerVins, ivanVins]
                 .forEach(set => {
                     if (
                         !identifiers.some(identifier =>
@@ -1925,15 +2026,27 @@
                 color: element.style.getPropertyValue('color'),
                 colorPriority: element.style.getPropertyPriority('color'),
                 weight: element.style.getPropertyValue('font-weight'),
-                weightPriority: element.style.getPropertyPriority('font-weight')
+                weightPriority: element.style.getPropertyPriority('font-weight'),
+                background: element.style.getPropertyValue('background'),
+                backgroundPriority: element.style.getPropertyPriority('background'),
+                backgroundClip: element.style.getPropertyValue('background-clip'),
+                backgroundClipPriority: element.style.getPropertyPriority('background-clip'),
+                textFill: element.style.getPropertyValue('-webkit-text-fill-color'),
+                textFillPriority: element.style.getPropertyPriority('-webkit-text-fill-color')
             });
         }
 
-        element.style.setProperty(
-            'color',
-            color,
-            'important'
-        );
+        if (color.startsWith('linear-gradient(')) {
+            element.style.setProperty('background', color, 'important');
+            element.style.setProperty('background-clip', 'text', 'important');
+            element.style.setProperty('-webkit-background-clip', 'text', 'important');
+            element.style.setProperty('-webkit-text-fill-color', 'transparent', 'important');
+            element.style.setProperty('color', 'transparent', 'important');
+        } else {
+            element.style.setProperty('background', 'none', 'important');
+            element.style.setProperty('-webkit-text-fill-color', color, 'important');
+            element.style.setProperty('color', color, 'important');
+        }
 
         element.style.setProperty(
             'font-weight',
@@ -2016,6 +2129,13 @@
             } else {
                 element.style.removeProperty('font-weight');
             }
+
+            if (original.background) element.style.setProperty('background', original.background, original.backgroundPriority);
+            else element.style.removeProperty('background');
+            if (original.backgroundClip) element.style.setProperty('background-clip', original.backgroundClip, original.backgroundClipPriority);
+            else element.style.removeProperty('background-clip');
+            if (original.textFill) element.style.setProperty('-webkit-text-fill-color', original.textFill, original.textFillPriority);
+            else element.style.removeProperty('-webkit-text-fill-color');
         });
         paintedElementStyles.clear();
 
@@ -2135,7 +2255,9 @@
         const targetSet =
             user === VLAD
                 ? vladVins
-                : workerVins;
+                : user === IVAN
+                    ? ivanVins
+                    : workerVins;
 
         const newlyAdded =
             vins.filter(
@@ -2147,7 +2269,11 @@
             targetSet.add(vin);
         });
 
-        const dailySet = user === VLAD ? dailyVladMarks : dailyWorkerMarks;
+        const dailySet = user === VLAD
+            ? dailyVladMarks
+            : user === IVAN
+                ? dailyIvanMarks
+                : dailyWorkerMarks;
         newlyAdded.forEach(vin => dailySet.add(`${todayKey()}|${vin}`));
 
         if (newlyAdded.length) {
@@ -2226,17 +2352,20 @@
         try {
             await replaceCloudState(
                 [],
+                [],
                 []
             );
 
             vladVins.clear();
             workerVins.clear();
+            ivanVins.clear();
 
             GM_setValue(
                 SHARED_VIN_STORAGE,
                 JSON.stringify({
                     vlad: [],
-                    worker: []
+                    worker: [],
+                    ivan: []
                 })
             );
 
@@ -2440,7 +2569,7 @@
     const accountLabel = document.createElement('span');
     accountLabel.textContent = 'LOGGED IN AS';
     const accountSelect = document.createElement('select');
-    accountSelect.innerHTML = '<option value="">Log in</option><option value="vlad">Vlad</option><option value="worker">Vadim</option>';
+    accountSelect.innerHTML = '<option value="">Log in</option><option value="vlad">Vlad</option><option value="worker">Vadim</option><option value="ivan">Ivan</option>';
     accountSelect.value = activeUser;
     Object.assign(accountSelect.style, {
         border: '1px solid #ccd3dc', borderRadius: '6px', background: '#ffffff',
@@ -2550,16 +2679,14 @@
         const allVins =
             new Set([
                 ...vladVins,
-                ...workerVins
+                ...workerVins,
+                ...ivanVins
             ]);
 
         let both = 0;
 
         allVins.forEach(vin => {
-            if (
-                vladVins.has(vin) &&
-                workerVins.has(vin)
-            ) {
+            if ([vladVins, workerVins, ivanVins].filter(set => set.has(vin)).length > 1) {
                 both++;
             }
         });
@@ -2587,7 +2714,7 @@
             both = countableIdentifiers
                 .filter(identifier =>
                     vladVins.has(identifier) &&
-                    workerVins.has(identifier)
+                    (workerVins.has(identifier) || ivanVins.has(identifier))
                 ).length;
         }
 
@@ -2598,17 +2725,19 @@
             .filter(identifier => SITE !== 'copart' || identifier.startsWith('LOT:'));
         const todayVlad = new Set(todayIdentifiers(dailyVladMarks));
         const todayWorker = new Set(todayIdentifiers(dailyWorkerMarks));
-        const todayAll = new Set([...todayVlad, ...todayWorker]);
-        const todayBoth = [...todayAll].filter(identifier => todayVlad.has(identifier) && todayWorker.has(identifier)).length;
+        const todayIvan = new Set(todayIdentifiers(dailyIvanMarks));
+        const todayAll = new Set([...todayVlad, ...todayWorker, ...todayIvan]);
+        const todayBoth = [...todayAll].filter(identifier => [todayVlad, todayWorker, todayIvan].filter(set => set.has(identifier)).length > 1).length;
 
         counter.textContent = statsMode === 'today'
-            ? `TODAY — ${itemLabel}: ${todayAll.size} | Vlad: ${todayVlad.size} | Vadim: ${todayWorker.size} | Both: ${todayBoth}`
-            : `ALL TIME — ${itemLabel}: ${countableIdentifiers.length} | Vlad: ${countFor(vladVins)} | Vadim: ${countFor(workerVins)} | Both: ${both}`;
+            ? `TODAY — ${itemLabel}: ${todayAll.size} | Vlad: ${todayVlad.size} | Vadim: ${todayWorker.size} | Ivan: ${todayIvan.size} | Shared: ${todayBoth}`
+            : `ALL TIME — ${itemLabel}: ${countableIdentifiers.length} | Vlad: ${countFor(vladVins)} | Vadim: ${countFor(workerVins)} | Ivan: ${countFor(ivanVins)} | Shared: ${both}`;
 
         statsButton.textContent = statsMode === 'today' ? '📊' : '↩';
         statsButton.title = statsMode === 'today' ? 'Show all-time statistics' : 'Back to today';
-        vladButton.textContent = activeUser ? `MARK · ${activeUser === VLAD ? 'VLAD' : 'VADIM'}` : 'LOG IN';
-        vladButton.style.background = activeUser === WORKER ? COLORS.worker : COLORS.vlad;
+        const activeName = activeUser === VLAD ? 'VLAD' : activeUser === WORKER ? 'VADIM' : activeUser === IVAN ? 'IVAN' : '';
+        vladButton.textContent = activeUser ? `MARK · ${activeName}` : 'LOG IN';
+        vladButton.style.background = activeUser === WORKER ? COLORS.worker : activeUser === IVAN ? COLORS.ivan : COLORS.vlad;
 
         status.textContent =
             cloudStatus;
@@ -2964,7 +3093,7 @@
         () => {
             if (!activeUser) {
                 accountSelect.focus();
-                alert('Choose Vlad or Vadim first.');
+                alert('Choose Vlad, Vadim or Ivan first.');
                 return;
             }
             markPage(
@@ -3187,7 +3316,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.23';
+  const SCRIPT_VERSION = '2.7.25';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3210,7 +3339,7 @@
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
   const SHEET_SAVE_SETTINGS_KEY = 'auctionAssistantSheetSaveSettingsV1';
   const SHEET_SAVE_WEB_APP_URL =
-    'https://script.google.com/macros/s/AKfycbyxQ0Sm8bw0EtVf2V88sIFWXBSnNvN-NfIZ_IQeHxJt9ZPRcf1DIkGF6waw7-FLfw8s/exec';
+    'https://script.google.com/macros/s/AKfycbyX4N45yrzBoOAaX7TzrlydMwl2W6l0LvchDlTRv1ahEJA2xfpAJa5rLCB9Qkj-2-pZ/exec';
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
