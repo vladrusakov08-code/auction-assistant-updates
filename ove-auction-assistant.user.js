@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.15
+// @version      2.7.23
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -3187,7 +3187,7 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.15';
+  const SCRIPT_VERSION = '2.7.23';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3210,7 +3210,7 @@
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
   const SHEET_SAVE_SETTINGS_KEY = 'auctionAssistantSheetSaveSettingsV1';
   const SHEET_SAVE_WEB_APP_URL =
-    'https://script.google.com/macros/s/AKfycbzkV9qb3-vKPyDl3xZsMxq8GKTMl0kC2WcfY86GvTWPV6_T4BIg_vBGsloqnBVat0KS/exec';
+    'https://script.google.com/macros/s/AKfycbyxQ0Sm8bw0EtVf2V88sIFWXBSnNvN-NfIZ_IQeHxJt9ZPRcf1DIkGF6waw7-FLfw8s/exec';
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
@@ -3779,26 +3779,107 @@
     return ['beige','black','blue','brown','burgundy','gold','gray','green','orange','pink',
       'purple','red','silver','white','yellow'].find((item) => text.includes(item)) || 'white';
   }
+  function cleanVehicleTitle(value = '', vin = '') {
+    let title = String(value || '').replace(/[\u200B-\u200D\uFEFF]/g, '').replace(/\s+/g, ' ').trim();
+    if (!title) return '';
+    // Manheim sometimes renders the heading and its metadata as one text node.
+    // The VIN is the first reliable boundary and keeps the make/model intact.
+    if (vin) {
+      const vinIndex = title.toUpperCase().indexOf(String(vin).toUpperCase());
+      if (vinIndex > 0) title = title.slice(0, vinIndex).trim();
+    }
+    // Also stop at any VIN-shaped token. This covers the legacy Manheim
+    // component where the visible VIN is glued directly to the model name.
+    const genericVinIndex = title.search(/[A-HJ-NPR-Z0-9]{17}/i);
+    if (genericVinIndex > 4) title = title.slice(0, genericVinIndex).trim();
+    title = title.split(/\s+(?:Provided\s*:|Adj(?:usted)?\s+MMR\s*:|Avg\.?\s+MMR\s*:|VIN\s*:)/i)[0].trim();
+    title = title.split(/(?:[·•|]\s*)?(?:\d{1,3}(?:,\d{3})+\s*(?:mi|miles)|(?:FWD|RWD|AWD|4WD|4X4)\b|Adj(?:usted)?\s+MMR\s*:|Avg\.?\s+MMR\s*:)/i)[0].trim();
+    // Browser titles often append the marketplace name after the vehicle.
+    title = title.split(/\s+(?:[-|•]\s*)?(?:Manheim|OVE|Copart)(?:\s*[-|•].*)?$/i)[0].trim();
+    const yearIndex = title.search(/\b(?:19|20)\d{2}\b/);
+    if (yearIndex > 0) title = title.slice(yearIndex).trim();
+    return /^\d{4}\s+[A-Z0-9]/i.test(title) ? title.slice(0, 110).trim() : '';
+  }
   let auctionTextCache = { url:'', at:0, text:'' };
+  function isManheimDetailPage() {
+    return AUCTION_SITE === 'MANHEIM' && /(?:landingPage|results)?#?\/details\/[A-HJ-NPR-Z0-9]{17}(?:\/|$)/i.test(location.href);
+  }
   function manheimDetailSummary() {
     const vin = location.href.match(/details\/([A-HJ-NPR-Z0-9]{17})(?:\/|$)/i)?.[1]?.toUpperCase() || '';
-    const parts = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
-      .slice(0, 16).map((node) => (node.textContent || '').trim())
+    // Manheim now renders the listing name as a plain component on some
+    // landingPage routes, not necessarily as h1/h2. These are native, narrow
+    // selector lookups; never walk or serialize the photo-gallery subtree.
+    const headings = [...document.querySelectorAll([
+      'h1','h2','h3','h4','[role="heading"]',
+      '[data-testid="vdp-title-text"]','[class*="vdp-title-text" i]',
+      '[data-testid*="vehicle-title" i]','[data-test*="vehicle-title" i]',
+      '[data-testid*="vehicle-name" i]','[data-test*="vehicle-name" i]',
+      '[class*="vehicle-title" i]','[class*="vehicle-name" i]',
+      '[class*="vehicle-description" i]'
+    ].join(','))].slice(0, 80);
+    // Never fall back to the raw heading here. In Manheim's legacy layout
+    // that raw node contains the entire vehicle card (VIN, MMR, buttons, etc.).
+    const parts = headings.map((node) => cleanVehicleTitle(node.textContent || '', vin))
       .filter((value) => value && value.length <= 160);
-    if (vin) {
-      try {
-        const match = document.evaluate(
-          `//*[contains(text(), "${vin}")]`, document, null,
-          XPathResult.FIRST_ORDERED_NODE_TYPE, null
-        ).singleNodeValue;
-        let node = match;
-        for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
-          const nearby = node.textContent || '';
-          if (nearby.length <= 5000) parts.push(nearby);
-          if (/\b[\d,]+\s*(?:mi|miles)\b/i.test(nearby) && /\b(?:19|20)\d{2}\b/.test(nearby)) break;
+    // Stay inside the small vehicle-header branch. XPath/text searches over
+    // the complete Manheim document walk the mounted photo gallery and were
+    // the main source of renderer stalls.
+    const vehicleHeading = headings.find((node) => /\b(?:19|20)\d{2}\b/.test(node.textContent || ''));
+    if (vehicleHeading) {
+      const parent = vehicleHeading.parentElement;
+      if (parent && parent.childElementCount < 40) {
+        for (const child of [...parent.children].slice(0, 24)) {
+          const nearby = (child.textContent || '').replace(/\s+/g, ' ').trim();
+          if (nearby && nearby.length <= 600) parts.push(nearby);
         }
-      } catch (_) {}
+      }
     }
+    // These selectors target only Manheim's small metadata fields. Do not
+    // inspect the gallery/body: a listing can keep dozens of large photos and
+    // legacy components mounted at the same time.
+    const metadataNodes = [...document.querySelectorAll([
+      '[data-testid*="location" i]', '[data-test*="location" i]',
+      '[aria-label*="location" i]', '[class*="vehicle-location" i]',
+      '[class*="auction-location" i]', '[class*="pickup-location" i]',
+      '[class*="sale-location" i]', '[class*="facilitating-location" i]',
+      '[data-test-id="find-at-auction"]','[class*="find-at-auction" i]',
+      '[data-test-id="lane-run-wrapper"]','[data-test-id="auction-starts"]',
+      'address', 'a[href*="/location" i]', 'a[href*="locations" i]'
+    ].join(','))].slice(0, 48);
+    for (const node of metadataNodes) {
+      if (node.childElementCount > 30) continue;
+      const value = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      if (value && value.length <= 500) parts.push(value);
+    }
+    // Some legacy detail layouts expose the location as a definition/table
+    // label followed by a sibling value. Read only that small row.
+    const locationLabels = [...document.querySelectorAll('dt,th,label,[role="rowheader"]')].slice(0, 120)
+      .filter((node) => /^(?:Pickup|Vehicle Location|Auction Location|Sale Location|Facilitating Location|Facility|Branch|Yard)\s*:?$/i
+        .test((node.textContent || '').replace(/\s+/g, ' ').trim()));
+    for (const labelNode of locationLabels) {
+      const row = labelNode.closest('tr,dl,[role="row"]') || labelNode.parentElement;
+      const value = (row?.textContent || labelNode.nextElementSibling?.textContent || '')
+        .replace(/\s+/g, ' ').trim();
+      if (value && value.length <= 800) parts.push(value);
+    }
+    // The VIN field lives in the lightweight header component. Its small
+    // ancestor also contains the full listing name on the new Manheim UI.
+    const vinNodes = [...document.querySelectorAll([
+      '[data-testid*="vin" i]','[data-test*="vin" i]','[aria-label*="vin" i]',
+      '[class*="vehicle-vin" i]','[class~="vin" i]'
+    ].join(','))].slice(0, 32);
+    for (const vinNode of vinNodes) {
+      if (vin && !(vinNode.textContent || '').toUpperCase().includes(vin)) continue;
+      const branch = vinNode.parentElement;
+      if (branch && branch.childElementCount < 40) {
+        for (const child of [...branch.children].slice(0, 24)) {
+          const value = (child.textContent || '').replace(/\s+/g, ' ').trim();
+          if (value && value.length <= 600) parts.push(value);
+        }
+      }
+      break;
+    }
+    if (vin) parts.push(`VIN: ${vin}`);
     return parts.join('\n').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
   }
   function auctionPageText(force = false) {
@@ -3808,7 +3889,7 @@
     // One textContent snapshot is cheaper than running many broad attribute
     // selectors across Manheim's very large legacy gallery DOM. Unlike
     // innerText it does not force layout. The result is cached and bounded.
-    const legacyManheimDetail = AUCTION_SITE === 'MANHEIM' && /landingPage#\/details\//i.test(location.href);
+    const legacyManheimDetail = isManheimDetailPage();
     const root = document.querySelector('main,[role="main"],#main-content') || document.body;
     // The legacy Manheim gallery may contain hundreds of MB of mounted photo
     // components. Never serialize its complete DOM: read only the heading and
@@ -3816,7 +3897,7 @@
     const text = legacyManheimDetail
       ? manheimDetailSummary()
       : (root?.textContent || '').replace(/[\u200B-\u200D\uFEFF]/g, ' ');
-    auctionTextCache = { url:location.href, at:now, text:text.slice(0, 500000) };
+    auctionTextCache = { url:location.href, at:now, text:text.slice(0, legacyManheimDetail ? 12000 : 120000) };
     return auctionTextCache.text;
   }
   function findVin() {
@@ -3920,21 +4001,29 @@
     const mileageText = mmr?.searchParams.get('mileage') || mmr?.searchParams.get('odometer') ||
       readMileageFromDom(vin, text) ||
       (manualBelongsHere && String(manual.vin || '').toUpperCase() === vin ? String(manual.mileage || '') : '');
-    const visibleHeading = [...document.querySelectorAll('h1,h2,h3,[role="heading"]')]
-      .find((element) => {
-        const value = (element.textContent || '').replace(/\s+/g, ' ').trim();
-        return element.getClientRects().length && value.length <= 140 &&
-          /\b(?:19|20)\d{2}\s+[A-Z0-9]/i.test(value);
-      })?.textContent?.replace(/\s+/g, ' ').trim();
+    const visibleHeading = [...document.querySelectorAll([
+      'h1','h2','h3','h4','[role="heading"]',
+      '[data-testid="vdp-title-text"]','[class*="vdp-title-text" i]',
+      '[data-testid*="vehicle-title" i]','[data-test*="vehicle-title" i]',
+      '[data-testid*="vehicle-name" i]','[data-test*="vehicle-name" i]',
+      '[class*="vehicle-title" i]','[class*="vehicle-name" i]',
+      '[class*="vehicle-description" i]'
+    ].join(','))].slice(0, 80)
+      .map((element) => cleanVehicleTitle(element.textContent || '', vin))
+      .find(Boolean);
     // Manheim's "Provided:" value is often an abbreviated decoder name
     // (for example "TOYOTA COR LE LE"). Prefer the full listing title shown
     // immediately above it and use the decoder name only as a final fallback.
     const listingTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}[^\n]{3,90})\s*\n\s*Provided\s*:/im)?.[1]?.trim();
     const generalTitle = text.match(/(?:^|\n)\s*((?:19|20)\d{2}\s+[A-Z][A-Z0-9 .&'\/-]{3,70})\s*(?:\n|$)/im)?.[1]?.trim();
-    const rawTitle = visibleHeading || listingTitle || generalTitle ||
+    // `document.title` is a cheap, stable final Manheim source. The listing
+    // header can mount after our first render, while the page title normally
+    // already contains the exact year/make/model/trim.
+    const browserTitle = cleanVehicleTitle(document.title || '', vin);
+    const rawTitle = visibleHeading || cleanVehicleTitle(listingTitle, vin) || cleanVehicleTitle(generalTitle, vin) || browserTitle ||
       text.match(/Provided:\s*([^\n]+)/i)?.[1] ||
       (!detectedVin && manual.vin ? 'Manual VIN lookup' : `${AUCTION_SITE} vehicle`);
-    const title = String(rawTitle || `${AUCTION_SITE} vehicle`).replace(/\s+/g, ' ').trim().slice(0, 140);
+    const title = cleanVehicleTitle(rawTitle, vin) || String(rawTitle || `${AUCTION_SITE} vehicle`).replace(/\s+/g, ' ').trim().slice(0, 110);
     const color = normalizeColor(mmr?.searchParams.get('color') ||
       text.match(/Exterior(?: Base)? Color\s*[:\n]?\s*([^\n]+)/i)?.[1] ||
       text.match(/Color\s*[:\n]?\s*(Beige|Black|Blue|Brown|Burgundy|Gold|Gray|Grey|Green|Orange|Pink|Purple|Red|Silver|White|Yellow)/i)?.[1] || '');
@@ -4038,6 +4127,9 @@
       ontimeout:() => reject(new Error('Google Sheets saver timed out')),
     }));
   }
+  function saveHeartIcon(saved = false) {
+    return `<svg class="save-heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.2 3.9 12.6A5.3 5.3 0 0 1 11.4 5L12 5.7l.6-.7a5.3 5.3 0 0 1 7.5 7.6Z" ${saved ? 'fill="currentColor"' : 'fill="none"'} stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
+  }
   async function saveCurrentVehicle() {
     const vehicle = readVehicle();
     if (!vehicle.vin || !vehicle.mileage) { render('Open a vehicle page with VIN and mileage first.'); return; }
@@ -4049,7 +4141,7 @@
       sheet = sheetSaveSettings();
     }
     const button = document.getElementById('ove-save-vehicle');
-    if (button) { button.disabled = true; button.textContent = '…'; }
+    if (button) { button.disabled = true; button.classList.add('is-saving'); button.innerHTML = '<span class="save-heart-wait" aria-label="Saving"></span>'; }
     const kbb = GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) || {};
     const carfax = GM_getValue(`oveCarfaxResult:${vehicle.vin}`, null) || {};
     const carfaxValue = GM_getValue(carfaxValueKey(vehicle.vin), null) || {};
@@ -4089,7 +4181,9 @@
       GM_setValue(`auctionAssistantSheetSaved:${AUCTION_SITE}:${vehicle.vin}`, {
         row:response.row, sheet:response.sheet || `${AUCTION_SITE} v2`, savedAt:Date.now()
       });
-      publishSharedSheetRow(vehicle.vin, response.row);
+      // The common Firestore marker is useful, but it must never delay the
+      // confirmation of an already successful Sheets save.
+      void publishSharedSheetRow(vehicle.vin, response.row);
       render(response.duplicate ? `Already saved in ${response.sheet} · row ${response.row}` : `Saved to ${response.sheet} · row ${response.row}`);
     } catch (error) {
       const message = `Could not save to ${AUCTION_SITE} sheet: ${error.message || error}`;
@@ -4177,11 +4271,14 @@
       #ove-kbb-run{width:100%;padding:11px;margin-top:11px;background:#2864eb;color:#fff;font-size:15px}
       #ove-laser-link-update{width:100%;padding:10px;margin-top:9px;background:#b45309;color:#fff;font-size:13px}
       #ove-kbb-settings{background:transparent;color:#556070;padding:3px 6px}
-      #ove-save-vehicle{background:transparent;color:#d7264e;padding:3px 6px;font-size:21px;line-height:1}
+      #ove-save-vehicle{display:grid;place-items:center;width:30px;height:30px;background:transparent;color:#d7264e;padding:3px;border-radius:50%;line-height:1}
       #ove-save-vehicle.is-saved{color:#d7264e}
       #ove-kbb-panel .vehicle-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
       #ove-kbb-panel .vehicle-head .vehicle{min-width:0;margin:0}
-      #ove-kbb-panel .vehicle-head #ove-save-vehicle{flex:0 0 auto;font-size:24px;padding:2px 4px}
+      #ove-kbb-panel .vehicle-head #ove-save-vehicle{flex:0 0 30px;width:30px;height:30px;padding:3px}
+      #ove-kbb-panel .save-heart-icon{display:block;width:22px;height:22px;stroke:currentColor}
+      #ove-kbb-panel .save-heart-wait{width:15px;height:15px;border:2px solid #d7264e40;border-top-color:#d7264e;border-radius:50%;animation:ove-save-spin .65s linear infinite}
+      @keyframes ove-save-spin{to{transform:rotate(360deg)}}
       #ove-kbb-close{background:#eef2f7;color:#465365;padding:4px 9px;font-size:18px;line-height:1}
       #ove-kbb-status{margin-top:9px;font-size:12px}.progress{height:7px;background:#e4e9f1;border-radius:99px;
         overflow:hidden;margin-top:8px}.progress i{display:block;height:100%;background:#2864eb;transition:width .4s ease}
@@ -4373,10 +4470,64 @@
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
   const DELIVERY_DESTINATION = { zip:'90045', lat:33.9581, lon:-118.3890 };
-  const DELIVERY_RATE_VERSION = '2026-07-dealer-v3';
+  const DELIVERY_RATE_VERSION = '2026-08-manheim-v6';
+  // A failed location lookup used to trigger render -> lookup -> render forever.
+  // Keep the failure cached long enough to protect the auction tab's main thread.
+  const DELIVERY_FAILURE_RETRY_MS = 30 * 60 * 1000;
+  // Exact facility points avoid a slow public-name search when Manheim gives
+  // us a branch label but no ZIP. Add entries only after verifying the branch.
+  const MANHEIM_FACILITY_POINTS = {
+    'manheim dallas fort worth': { lat:32.8154004, lon:-97.1047124, zip:'76040', label:'Manheim Dallas-Fort Worth' },
+  };
   const deliveryLookups = new Map();
   function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
+  function deliveryOriginSignature(origin) {
+    return `${DELIVERY_RATE_VERSION}|${origin?.zip || ''}|${origin?.label || ''}|${location.href}`;
+  }
+  async function withDeliveryDeadline(task, ms = 18000) {
+    let timer;
+    try {
+      return await Promise.race([
+        task,
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Delivery lookup timed out')), ms); }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  let compactContextCache = { url:'', at:0, value:null };
   function compactPageContext() {
+    const now = Date.now();
+    if (compactContextCache.url === location.href && now - compactContextCache.at < 10000 && compactContextCache.value)
+      return compactContextCache.value;
+    // Manheim detail pages mount a very large photo-gallery tree. Broad
+    // attribute selectors or whole-page textContent reads can block Chrome's
+    // renderer for seconds and make every tab appear white. Reuse the small,
+    // bounded vehicle summary instead and never inspect embedded page JSON.
+    if (isManheimDetailPage()) {
+      // Manheim keeps the branch/address in small bootstrap/state scripts on
+      // some routes. Read only bounded script text with location keys; this is
+      // independent of the very large mounted photo-gallery DOM.
+      const locationKey = /(?:auctionLocation|vehicleLocation|pickupLocation|postalCode|locationName|facilityName|branchName|auctionName|physicalAddress)/ig;
+      const snippets = [];
+      for (const node of [...document.scripts].slice(0, 100)) {
+        const source = node.textContent || '';
+        // Bootstrap state can be larger than 300 KB. Never retain it: copy
+        // only small windows around location keys, with hard limits.
+        if (!source || source.length > 2500000) continue;
+        locationKey.lastIndex = 0;
+        let match;
+        let count = 0;
+        while ((match = locationKey.exec(source)) && count++ < 12 && snippets.length < 120) {
+          snippets.push(source.slice(Math.max(0, match.index - 220), Math.min(source.length, match.index + 520)));
+        }
+        if (snippets.length >= 120) break;
+      }
+      const embedded = snippets.join('\n').slice(0, 350000);
+      const value = { text:auctionPageText(), embedded };
+      compactContextCache = { url:location.href, at:now, value };
+      return value;
+    }
     const selector = [
       'h1','h2','h3','address','button',
       '[class*="location" i]','[class*="auction" i]','[class*="pickup" i]',
@@ -4390,7 +4541,9 @@
       .filter(Boolean).join('\n');
     const embedded = [...document.querySelectorAll('script[type="application/ld+json"],script#__NEXT_DATA__')]
       .slice(0, 8).map((node) => (node.textContent || '').slice(0, 200000)).join('\n');
-    return { text:visible.slice(0, 120000), embedded:embedded.slice(0, 800000) };
+    const value = { text:visible.slice(0, 60000), embedded:embedded.slice(0, 250000) };
+    compactContextCache = { url:location.href, at:now, value };
+    return value;
   }
   function jsonRequest(url) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
@@ -4412,16 +4565,40 @@
     const context = compactPageContext();
     const text = context.text;
     const html = context.embedded;
-    let labeledZip = text.match(/(?:Pickup|Vehicle Location|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,180}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] ||
+    const attributeParts = AUCTION_SITE === 'MANHEIM' ? [...document.querySelectorAll([
+      '[data-auction-location]','[data-vehicle-location]','[data-pickup-location]',
+      '[data-location-name]','[data-facility-name]','[data-branch-name]',
+      '[data-postal-code]','[data-zip]','[itemprop="address"]','[itemprop="postalCode"]'
+    ].join(','))].slice(0, 40).map((node) => {
+      const attrs = ['data-auction-location','data-vehicle-location','data-pickup-location','data-location-name','data-facility-name','data-branch-name','data-postal-code','data-zip','content']
+        .map((name) => node.getAttribute(name) || '').filter(Boolean).join(' ');
+      return `${attrs} ${(node.textContent || '').replace(/\s+/g, ' ')}`.trim().slice(0, 500);
+    }).filter(Boolean).join('\n') : '';
+    // Current Manheim VDP exposes the exact pickup branch in this one small
+    // field, e.g. "TX - Manheim Dallas-Fort Worth". Prefix it with a stable
+    // label so the normal location parser can use it without scanning the VDP.
+    const manheimPickup = AUCTION_SITE === 'MANHEIM'
+      ? (document.querySelector('[data-test-id="find-at-auction"] [class*="pickup-location" i], [class*="find-at-auction"] [class*="pickup-location" i]')?.textContent || '')
+          .replace(/\s+/g, ' ').trim().slice(0, 140)
+      : '';
+    const locationLinks = AUCTION_SITE === 'MANHEIM' ? [...document.querySelectorAll([
+      'a[href*="location" i]','a[href*="auction" i]','a[href*="event" i]','a[href*="sale" i]'
+    ].join(','))].slice(0, 60).map((node) => {
+      const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
+      const href = node.getAttribute('href') || '';
+      return `${label} ${href}`.trim().slice(0, 500);
+    }).filter(Boolean).join('\n') : '';
+    const locationContext = `${text}\n${attributeParts}\n${manheimPickup ? `Vehicle Location: ${manheimPickup}` : ''}\n${locationLinks}`;
+    let labeledZip = locationContext.match(/(?:Pickup|Vehicle Location|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,180}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] ||
       html.match(/["'](?:postalCode|postal_code|zipCode|zip_code|zip)["']\s*:\s*["']?(\d{5})(?:-\d{4})?/i)?.[1] ||
       html.match(/(?:postalCode|postal_code|zipCode|zip_code|zip)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")?(\d{5})(?:-\d{4})?/i)?.[1] || '';
     const mapLink = [...document.querySelectorAll('a[href*="google.com/maps"],a[href*="maps.google"],a[href*="maps.apple"]')]
       .find((link) => /direction|map|location|pickup|auction/i.test(`${link.textContent || ''} ${link.href}`));
     if (!labeledZip && mapLink) labeledZip = `${mapLink.textContent || ''} ${mapLink.href}`.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] || '';
-    const pickup = text.match(/(?:^|\n)\s*(?:Pickup|Vehicle Location|Located at)\s*:?\s*([^\n]{3,100})/im)?.[1]?.trim();
-    const auctionLocation = text.match(/(?:Auction Location|Branch|Yard|Facility|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim();
-    const embeddedLocation = html.match(/["'](?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
-      html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")([^"'&{}]{3,100})/i)?.[1]?.trim();
+    const pickup = locationContext.match(/(?:^|\n)\s*(?:Pickup|Vehicle Location|Located at)\s*:?\s*([^\n]{3,100})/im)?.[1]?.trim();
+    const auctionLocation = locationContext.match(/(?:Auction Location|Branch|Yard|Facility|Sale Location|Facilitating Location)\s*:?\s*([^\n]{3,140})/i)?.[1]?.trim();
+    const embeddedLocation = html.match(/["'](?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
+      html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")([^"'&{}]{3,100})/i)?.[1]?.trim();
     const copartLocation = AUCTION_SITE === 'COPART'
       ? text.match(/(?:Location|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim() : '';
     let label = pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
@@ -4435,14 +4612,32 @@
       label = label.replace(/\s*(?:View Map|Directions|Get Directions).*$/i, '').trim();
       if (label.length > 100) label = label.slice(0, 100).trim();
     }
+    // Facility links often contain the useful Manheim branch name even when
+    // the card itself has not mounted its address yet.
+    if (!label && AUCTION_SITE === 'MANHEIM') {
+      const locationLink = [...document.querySelectorAll('a[href*="location" i],a[href*="locations" i]')]
+        .slice(0, 40).find((node) => {
+          const value = (node.textContent || '').replace(/\s+/g, ' ').trim();
+          return value.length >= 4 && value.length <= 100 && !/^Manheim Locations?$/i.test(value);
+        });
+      label = (locationLink?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
     return labeledZip || label ? { zip:labeledZip, label:label || `ZIP ${labeledZip}` } : null;
+  }
+  function knownManheimFacility(origin) {
+    if (AUCTION_SITE !== 'MANHEIM' || !origin?.label) return null;
+    const key = String(origin.label).replace(/^[A-Z]{2}\s*-\s*/i, '')
+      .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    return MANHEIM_FACILITY_POINTS[key] || null;
   }
   async function geocodeDeliveryOrigin(origin) {
     const cacheKey = `auctionAssistantGeocode:${origin.zip || origin.label}`;
     const cached = GM_getValue(cacheKey, null);
     if (cached?.lat && cached?.lon) return cached;
     let point;
-    if (origin.zip) {
+    const knownFacility = knownManheimFacility(origin);
+    if (knownFacility) point = { ...knownFacility };
+    if (!point && origin.zip) {
       try {
         const result = await jsonRequest(`https://api.zippopotam.us/us/${origin.zip}`);
         const place = result?.places?.[0];
@@ -4489,7 +4684,7 @@
   function deliveryVehicleType(vehicle) {
     const title = String(vehicle.title || '').toLowerCase();
     if (/\b(?:pickup|pick-up|truck|f-?150|f-?250|f-?350|silverado|sierra|tundra|tacoma|ram\s*\d)/i.test(title)) return 'pickup';
-    if (/\b(?:suv|sport utility|crossover|4runner|rav4|highlander|explorer|expedition|tahoe|suburban|yukon|cherokee|wrangler|bronco)\b/i.test(title)) return 'suv';
+    if (/\b(?:suv|sport utility|crossover|c-?hr|4runner|rav4|highlander|explorer|expedition|tahoe|suburban|yukon|cherokee|wrangler|bronco)\b/i.test(title)) return 'suv';
     if (/\b(?:van|cargo van|sprinter|transit|promaster)\b/i.test(title)) return 'van';
     return 'sedan';
   }
@@ -4561,6 +4756,9 @@
     ]);
   }
   function isManheimSimulcast() {
+    // The URL is authoritative on Manheim detail routes and avoids another
+    // page scan during every calculator render.
+    if (AUCTION_SITE === 'MANHEIM' && /\/Simulcast(?:[/?#]|$)/i.test(location.href)) return true;
     const page = `${location.href} ${compactPageContext().text}`;
     return /(?:\/Simulcast\b|Simulcast Live|Enter Sale|Lane\/Run|Proxy Bid)/i.test(page);
   }
@@ -4584,12 +4782,12 @@
     if (!vehicle?.vin || deliveryLookups.has(vehicle.vin)) return deliveryLookups.get(vehicle.vin);
     const task = (async () => {
       const origin = readDeliveryOrigin();
-      if (!origin) throw new Error('OVE did not provide an auction ZIP — enter delivery manually');
-      const signature = `${DELIVERY_RATE_VERSION}|${origin.zip}|${origin.label}|${location.href}`;
+      if (!origin) throw new Error(`${AUCTION_SITE} did not provide an auction location — enter delivery manually`);
+      const signature = deliveryOriginSignature(origin);
       const current = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
       if (current?.signature === signature && current.price) return current;
-      const point = await geocodeDeliveryOrigin(origin);
-      const route = await deliveryRoadMiles(point);
+      const point = await withDeliveryDeadline(geocodeDeliveryOrigin(origin), 9000);
+      const route = await withDeliveryDeadline(deliveryRoadMiles(point), 9000);
       const type = deliveryVehicleType(vehicle);
       const isRunning = deliveryRunningStatus();
       const price = calculateDeliveryEstimate(route.miles, type, isRunning);
@@ -4602,7 +4800,9 @@
       return estimate;
     })().catch((error) => {
       GM_setValue(deliveryEstimateKey(vehicle.vin), {
-        error:error.message || 'Location unavailable', calculatedAt:Date.now(),
+        error:error.message || 'Location unavailable',
+        signature:deliveryOriginSignature(readDeliveryOrigin()),
+        calculatedAt:Date.now(),
       });
       return null;
     }).finally(() => deliveryLookups.delete(vehicle.vin));
@@ -4820,7 +5020,7 @@
       bindCarfaxValueButton(readVehicle(), config.zip);
       return;
     }
-    target.innerHTML = `<div class="vehicle-head"><div class="vehicle">${vehicle.title}</div><button id="ove-save-vehicle" title="Save vehicle to ${AUCTION_SITE} v2">${sheetSaved ? '♥' : '♡'}</button></div><div class="muted">${vehicle.vin}</div>
+    target.innerHTML = `<div class="vehicle-head"><div class="vehicle">${vehicle.title}</div><button id="ove-save-vehicle" title="Save vehicle to ${AUCTION_SITE} v2" aria-label="Save vehicle">${saveHeartIcon(Boolean(sheetSaved))}</button></div><div class="muted">${vehicle.vin}</div>
       <div class="grid miles">
         <div class="cell"><div class="label">Avg. Mileage</div><div class="value">${miles(result?.avgMileage)}</div></div>
         <div class="cell"><div class="label">ODO</div><div class="value">${miles(vehicle.mileage || result?.odo)}</div></div>
@@ -4863,7 +5063,19 @@
     bindCarfaxValueButton(vehicle, config.zip);
     bindDealInputs(vehicle.vin);
     const cachedDelivery = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
-    if (!cachedDelivery?.price) {
+    const deliveryFailureAge = cachedDelivery?.error
+      ? Date.now() - Number(cachedDelivery.calculatedAt || 0)
+      : Infinity;
+    // Retry immediately only when Manheim has supplied *new* location data.
+    // Older logic retried every render as soon as any label appeared, which
+    // could leave the panel at "Detecting…" and keep the tab needlessly busy.
+    const currentOrigin = cachedDelivery?.error ? readDeliveryOrigin() : null;
+    const locationMountedAfterInitialRead = Boolean(cachedDelivery?.error && currentOrigin &&
+      (!cachedDelivery.signature || cachedDelivery.signature !== deliveryOriginSignature(currentOrigin)));
+    const shouldAutoEstimateDelivery = !cachedDelivery?.price &&
+      (!cachedDelivery?.error || locationMountedAfterInitialRead ||
+        deliveryFailureAge >= DELIVERY_FAILURE_RETRY_MS);
+    if (shouldAutoEstimateDelivery) {
       ensureAutoDelivery(vehicle).then((estimate) => {
         if (readVehicle().vin === vehicle.vin) {
           render(estimate ? 'Delivery estimated automatically.' : 'Auction location is unavailable; delivery can be entered manually.');
@@ -5180,7 +5392,8 @@
     const signature = `${location.href}|${vehicle.vin}|${vehicle.mileage}|${vehicle.title}|${vehicle.color}`;
     if (!force && signature === lastVehicleSignature) return;
     lastVehicleSignature = signature;
-    helperVehicleStable = Boolean(vehicle.vin && vehicle.mileage && vehicle.title);
+    const genericTitle = !vehicle.title || /^(?:MANHEIM|OVE|COPART) vehicle$/i.test(vehicle.title);
+    helperVehicleStable = Boolean(vehicle.vin && vehicle.mileage && !genericTitle);
     render();
     hydrateSharedResult(vehicle, force).then((loaded) => { if (loaded) render('Loaded shared KBB/CARFAX data'); });
   }
