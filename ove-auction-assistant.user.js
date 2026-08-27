@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.25
+// @version      2.7.42-beta
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -190,6 +190,10 @@
     let hideMode = 'show';
     const filteredCards = new Set();
     const paintedElementStyles = new Map();
+    // Filtering must not repaint a whole OVE result page.  Keep the last
+    // already-scanned result set so HIDE MINE only toggles card classes.
+    let lastPaintedOccurrences = [];
+    let lastAuctionFingerprint = '';
     let activeUser = GM_getValue(ACTIVE_USER_STORAGE, '');
     if (![VLAD, WORKER, IVAN].includes(activeUser)) activeUser = '';
 
@@ -1938,18 +1942,36 @@
                         ? seenByWorker
                         : activeUser === IVAN && seenByIvan;
             const card = item.card;
-            const cardVins = card
-                ? new Set((card.textContent || '').match(VIN_REGEX) || [])
-                : new Set();
-            const unsafeContainer = !card ||
-                card === document.body ||
-                card === document.documentElement ||
-                card.matches?.('html, body, main, [role="main"], #root, #app') ||
-                cardVins.size > 1;
+            // This is deliberately cached on the occurrence.  Reading every
+            // complete card's text on each filter click was costly on OVE
+            // pages with hundreds of listings and caused visible reflow.
+            if (item.filterCardSafe === undefined) {
+                const cardVins = card
+                    ? new Set((card.textContent || '').match(VIN_REGEX) || [])
+                    : new Set();
+                // A Manheim result card frequently contains more than one
+                // VIN-shaped value in its DOM (for example a rendered link
+                // and an accessibility copy).  The generic one-VIN safety
+                // rule therefore rejected every legitimate Manheim card and
+                // made HIDE MINE / HIDE MARKED appear broken.  These two
+                // selectors are the bounded result-card roots supplied by
+                // findManheimVinOccurrences(), never the page container.
+                const isManheimResultCard = SITE === 'manheim' && Boolean(
+                    card?.matches?.(
+                        '.SearchResultsDetailView__card-styles, .SearchResultsDetailView__details_row'
+                    )
+                );
+                item.filterCardSafe = Boolean(card) &&
+                    card !== document.body &&
+                    card !== document.documentElement &&
+                    !card.matches?.('html, body, main, [role="main"], #root, #app') &&
+                    (isManheimResultCard || cardVins.size === 1);
+            }
 
             if (
                 shouldHide &&
-                !unsafeContainer
+                item.filterCardSafe &&
+                card.isConnected
             ) {
                 nextFilteredCards.add(card);
             }
@@ -2142,6 +2164,8 @@
         const occurrences =
             findAllVinOccurrences();
 
+        lastPaintedOccurrences = occurrences;
+
         linkCopartVinAndLot(occurrences);
 
         occurrences
@@ -2199,6 +2223,10 @@
             );
 
         applyMarkedFilter(occurrences);
+
+        // A class-only filter update does not change this fingerprint.  Save
+        // it after each real scan so the observer ignores its own UI work.
+        lastAuctionFingerprint = auctionFingerprint();
 
         updateCounter();
     }
@@ -3110,8 +3138,6 @@
         updateCounter();
     });
 
-    let filterReconcileTimers = [];
-
     function clearFilterClassesEverywhere() {
         document.querySelectorAll(
             '.vin-marker-filter-hidden, .vin-marker-filter-hidden-ove'
@@ -3126,25 +3152,23 @@
 
     hideSelect.addEventListener('change', () => {
         hideMode = hideSelect.value;
-        filterReconcileTimers.forEach(clearTimeout);
-        filterReconcileTimers = [];
 
         if (hideMode === 'show') {
             clearFilterClassesEverywhere();
             return;
         }
 
-        paintSeenVins();
-
-        // OVE may replace the results once after their height changes. Reapply
-        // the selected filter a bounded number of times, never continuously.
-        if (SITE === 'ove') {
-            filterReconcileTimers = [700, 1700].map(delay =>
-                setTimeout(() => {
-                    if (hideMode !== 'show') paintSeenVins();
-                }, delay)
-            );
+        // HIDE MINE is intentionally a class-only operation.  The previous
+        // implementation launched up to three full page scans (immediate,
+        // +700ms and +1700ms), which made large OVE result lists blink and
+        // sometimes reappear while their layout was being rebuilt.
+        if (lastPaintedOccurrences.length) {
+            applyMarkedFilter(lastPaintedOccurrences);
+            return;
         }
+
+        // Only the first click before initial results have loaded needs a scan.
+        scheduleMarkerPaint();
     });
 
     syncButton.addEventListener(
@@ -3202,7 +3226,6 @@
 
     let mutationTimer;
     let mutationIdleHandle = null;
-    let lastAuctionFingerprint = '';
     let markerStopped = false;
 
     function auctionFingerprint() {
@@ -3300,7 +3323,6 @@
         window.removeEventListener('popstate', reconcileMarkerObserver);
         clearTimeout(mutationTimer);
         clearTimeout(copartAutoSyncTimer);
-        filterReconcileTimers.forEach(clearTimeout);
         clearInterval(markerSyncInterval);
         if (mutationIdleHandle) {
             if (typeof cancelIdleCallback === 'function') {
@@ -3316,7 +3338,11 @@
 (function () {
   'use strict';
   const HOST = location.hostname.toLowerCase();
-  const SCRIPT_VERSION = '2.7.25';
+  // Keep the numeric version for safe update comparison and a separate label
+  // for beta builds.  Previously this display value was left at 2.7.25 even
+  // while Tampermonkey was correctly running the newer beta file.
+  const SCRIPT_VERSION = '2.7.40';
+  const SCRIPT_VERSION_LABEL = '2.7.40-beta';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -3326,6 +3352,13 @@
   let updateCheckStarted = false;
   const IS_SUPPORTED_AUCTION = HOST.includes('ove.com') || HOST.includes('manheim.com') || HOST.includes('copart.com');
   const AUCTION_SITE = HOST.includes('copart') ? 'COPART' : HOST.includes('manheim') ? 'MANHEIM' : HOST.includes('ove.com') ? 'OVE' : 'VEHICLE';
+  // Vehicles saved before shared sheet-row sync existed have their VIN only in
+  // the note of the spreadsheet title cell.  This small immutable bootstrap
+  // set lets every teammate see the filled heart immediately, without a page
+  // scan, a Sheets request, or any load on Manheim.
+  const HISTORICAL_SHEET_SAVED_VINS = new Set(AUCTION_SITE === 'MANHEIM' ? [
+    '5YFEPMAE6MP239860','3FMCR9BN3SRE09012','2C4RC1FG5RR144106','2T3WFREV6HW316768','2T3MWRFV1MW112119','NMTKHMBX0JR009457','2T2YZMDA2MC303338','1HGCR2F52FA055054','WDDZF4KB4HA176430','5YFEPMAE7NP318682','4T1R11AK4NU676201','4T1DAACK2SU193471','4T1C11AK3PU747946','5YFEPMAE2MP204751','4T1G11AK5LU943754','4T1T11AK6PU136325','3TMAZ5CN5GM013963','4T1B11HKXJU560650','1HGCV1F11KA125883','4T1G11AK6PU183727','4T1BF1FK6HU441606','4T1S11AK1MU492415','5YFB4MDE6RP115795','4T1G11AK8NU684034','5YFBURHEXFP317557','5TDHBRCH7NS557169','NMTKHMBXXJR026086','5TFGZ5AN2HX091223','4T1T11AKXRU214897','JTNK4RBEXK3055689','5YFB4MDE8PP066919','5TDKZ3DCXJS919541','JTDEPRAE4LJ062709','4T1B11HK7JU141445','5N1DL0MM0HC521957','JN1CV6FE4FM810613','JTHKD5BH4F2228110','2HGFC2F89KH564871','2HGFE2F51RH552322','2HKRM3H5XGH519048','5YFB4MDE0PP063027','2T3P1RFV0RC444444','3FA6P0PU3HR379687','JTMBFREV5GJ075572','5YFBURHE7HP655193','JTDS4MCE0NJ081109','NMTKHMBX4KR080100','4T1K61BK6NU048027','JTDKARFP4H3057696','2T3W1RFV9MC126505','JTJDZKCA3K2015488','4T1C11AK2RU865957','5FNYF6H24MB093042','2HGFC2F89KH588376','2HGFE2F50NH557540','2T1BURHE3GC600626','2T3JFREV7JW744591','JTDKARFP2H3010764','5TFRY5F15GX205666','NMTKHMBX8JR026992','JTJZB1BA8F2415381','2HGFC1F79HH643452','1HGCV1F39KA110081','1HGCR2F32GA018733','19XFC1F3XLE023466','7FARW1H81HE030535','2HGFC2F59GH514601','1HGCV1F16JA093995'
+  ] : []);
   const BRIDGE = 'http://127.0.0.1:8765';
   const CARFAX_BRIDGE = 'http://127.0.0.1:8766';
   const SETTINGS_KEY = 'oveKbbSettings';
@@ -3339,13 +3372,15 @@
   const DEAL_SETTINGS_KEY = 'auctionAssistantDealSettings';
   const SHEET_SAVE_SETTINGS_KEY = 'auctionAssistantSheetSaveSettingsV1';
   const SHEET_SAVE_WEB_APP_URL =
-    'https://script.google.com/macros/s/AKfycbyX4N45yrzBoOAaX7TzrlydMwl2W6l0LvchDlTRv1ahEJA2xfpAJa5rLCB9Qkj-2-pZ/exec';
+    'https://script.google.com/macros/s/AKfycbw0lvNfG9d7BDbk_5JapsHMhd-9T-xFeM9auoRQFQG33_t1yfkGesgMh3rjSxTnkwfr/exec';
   const KBB_QUEUE_FIELD = 'kbbSharedQueueV1';
   const SHARED_RESULTS_FIELD = 'vehicleSharedResultsV1';
   const KBB_QUEUE_DOC = 'https://firestore.googleapis.com/v1/projects/vin-tracker-b1a76/databases/(default)/documents/ove_sync/state';
   const LASER_UPDATE_ENDPOINT = 'https://vordtools-kbb.147-182-233-195.sslip.io/laser-auth';
   const KBB_DIRECT_ENDPOINT = 'https://vordtools-kbb.147-182-233-195.sslip.io/kbb';
   const KBB_QUEUE_AUTH_KEY = 'firebase_auth_shared_v3';
+  const sheetVehicleHydratedVins = new Set();
+  const sheetVehicleHydrationInFlight = new Map();
   const FIREBASE_API_KEY = 'AIzaSyDdKVdF7Dtpo_8_QhKCpy4usKcV8AAt5rE';
   const MANUAL_VEHICLE_KEY = `auctionAssistantManualVehicle:${HOST}`;
   const PAGE_INSTANCE_ID =
@@ -3603,15 +3638,21 @@
       if (shared.carfaxValue &&
           (!localCarfaxValue || Number(shared.carfaxValue.fetchedAt || 0) > Number(localCarfaxValue.fetchedAt || 0)))
         GM_setValue(carfaxValueKey(vehicle.vin), { ...shared.carfaxValue, sharedUpdatedAt:shared.updatedAt });
-      if (shared.sheetRow) GM_setValue(`auctionAssistantSheetSaved:${vehicle.vin}`, { row:shared.sheetRow, savedAt:shared.sheetSavedAt || shared.updatedAt });
+      // The saved status is shared between teammates, while its visual state
+      // is stored per auction site.  Keep the same key the heart reads.
+      if (shared.sheetRow) GM_setValue(`auctionAssistantSheetSaved:${AUCTION_SITE}:${vehicle.vin}`, {
+        row:shared.sheetRow,
+        sheet:shared.sheet || `${AUCTION_SITE} v2`,
+        savedAt:shared.sheetSavedAt || shared.updatedAt,
+      });
       return Boolean(shared.kbb || shared.carfax || shared.carfaxValue || shared.sheetRow);
     } catch (_) { return false; }
   }
-  async function publishSharedSheetRow(vin, row) {
+  async function publishSharedSheetRow(vin, row, sheet = '') {
     for (let attempt = 0; attempt < 6; attempt++) {
       try {
         const { results, updateTime } = await readSharedResults();
-        results[vin] = { ...(results[vin] || {}), sheetRow:Number(row), sheetSavedAt:Date.now(), updatedAt:Date.now() };
+        results[vin] = { ...(results[vin] || {}), sheetRow:Number(row), sheet:String(sheet || ''), sheetSavedAt:Date.now(), updatedAt:Date.now() };
         await writeSharedResults(results, updateTime); return;
       } catch (error) {
         if (![409,412].includes(error.status) || attempt === 5) return;
@@ -3763,11 +3804,18 @@
     }
     return '';
   }
-  function saveCarfaxText(rawText, explicitReportUrl = '', rawHtml = '') {
+  function saveCarfaxText(rawText, explicitReportUrl = '', rawHtml = '', allowPartialHistory = false) {
     const pending = GM_getValue(CARFAX_JOB_KEY, null);
     if (!pending || pending.completedAt || Date.now() - pending.startedAt > 5 * 60 * 1000) return false;
     const text = (rawText || '').replace(/\s+/g, ' ');
-    if (!text.includes('CARFAX Report')) return false;
+    // Some completed partner pages use only "Vehicle History Report" in
+    // their compact HTML. The VIN and a report-only history section make it
+    // unambiguous, so do not lose a finished report just because the logo
+    // heading was omitted from that response.
+    const hasCarfaxReportHeading = /CARFAX\s+(?:Vehicle\s+History\s+)?Report/i.test(text);
+    const hasCompactHistoryHeading = /\bVehicle\s+History\s+Report\b/i.test(text) &&
+      /\b(?:Title\s+History|Ownership\s+History|Additional\s+History|Accidents?\s+or\s+Damage)\b/i.test(text);
+    if (!hasCarfaxReportHeading && !hasCompactHistoryHeading) return false;
     const summaryText = text;
     const vin = text.match(/VIN:\s*([A-HJ-NPR-Z0-9]{17})/i)?.[1]?.toUpperCase();
     if (!vin || vin !== pending.vin) return false;
@@ -3790,7 +3838,11 @@
     // A shell/loading page can already contain the VIN, price and generic
     // accident advertising. Wait for an authoritative history status before
     // completing the job, otherwise the UI could label an unknown result as an accident.
-    if (!noAccidents && !hasAccidentOrDamage) return false;
+    // A finished report can occasionally omit its accident summary from the
+    // first HTML response even though it is already available in CARFAX
+    // history.  After the report has had time to finish, keep the report link
+    // and show "Check Report" instead of spinning forever.
+    if (!noAccidents && !hasAccidentOrDamage && !allowPartialHistory) return false;
     const retailMatch = text.match(/CARFAX\s+(?:Retail\s+)?Value\s*\$([\d,]+)/i) ||
       text.match(/\$([\d,]+)\s*CARFAX\s+Retail\s+Value/i);
     const vehicleTitle = extractCarfaxVehicleTitle(text, rawHtml);
@@ -4256,6 +4308,50 @@
       ontimeout:() => reject(new Error('Google Sheets saver timed out')),
     }));
   }
+  async function hydrateSheetVehicleDeal(vehicle) {
+    if (!vehicle?.vin || sheetVehicleHydratedVins.has(vehicle.vin)) return false;
+    if (sheetVehicleHydrationInFlight.has(vehicle.vin)) return sheetVehicleHydrationInFlight.get(vehicle.vin);
+    const config = sheetSaveSettings();
+    // Every team member who can save already has this setting.  Do not prompt
+    // while merely viewing a car: viewing must stay silent and lightweight.
+    if (!config.secret) {
+      sheetVehicleHydratedVins.add(vehicle.vin);
+      return false;
+    }
+    const task = postSheetVehicle({ action:'getVehicle', vin:vehicle.vin, auctionSite:AUCTION_SITE })
+      .then((response) => {
+        sheetVehicleHydratedVins.add(vehicle.vin);
+        if (!response?.found || !response.deal) return false;
+        const key = `${DEAL_SETTINGS_KEY}:${vehicle.vin}`;
+        const local = GM_getValue(key, {}) || {};
+        const remote = response.deal;
+        // The spreadsheet is the shared source of truth for a saved VIN. Keep
+        // local settings such as an unsaved target profit, but restore all
+        // actual deal amounts entered by any teammate.
+        GM_setValue(key, {
+          ...local,
+          purchasePrice:Number(remote.purchasePrice || 0),
+          fee:Number(remote.fee || 0), feeManual:Boolean(remote.fee),
+          delivery:Number(remote.delivery || 0),
+          deliveryManual:Boolean(remote.delivery),
+          extra:Number(remote.extra || 0),
+          sheetHydratedAt:Date.now(),
+        });
+        GM_setValue(`auctionAssistantSheetSaved:${AUCTION_SITE}:${vehicle.vin}`, {
+          row:response.row, sheet:response.sheet || `${AUCTION_SITE} v2`, savedAt:Date.now(),
+        });
+        return true;
+      })
+      .catch(() => false)
+      .finally(() => {
+        // A failed lookup must never retry on every small panel re-render.
+        // It will get one fresh chance after the next page navigation.
+        sheetVehicleHydratedVins.add(vehicle.vin);
+        sheetVehicleHydrationInFlight.delete(vehicle.vin);
+      });
+    sheetVehicleHydrationInFlight.set(vehicle.vin, task);
+    return task;
+  }
   function saveHeartIcon(saved = false) {
     return `<svg class="save-heart-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.2 3.9 12.6A5.3 5.3 0 0 1 11.4 5L12 5.7l.6-.7a5.3 5.3 0 0 1 7.5 7.6Z" ${saved ? 'fill="currentColor"' : 'fill="none"'} stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`;
   }
@@ -4289,6 +4385,10 @@
         savedBy:GM_getValue('vin_marker_active_profile_v1', '') || '',
         kbbFair:Number(kbb.values?.fair?.value || 0), kbbGood:Number(kbb.values?.good?.value || 0),
         carfaxRetail, carfaxUrl,
+        // The shared sheet keeps the recommended bid and an optional manual
+        // purchase price in separate columns. Send both on every refresh.
+        recommendedBuy:Number(calculatedDeal?.recommendedBuy || 0),
+        targetProfit:Number(deal.targetProfit || 2000),
         purchasePrice:Number(deal.purchasePrice || 0),
         auctionFee:Number(calculatedDeal?.fee || 0),
         delivery:Number(deal.delivery || 0), extra:Number(deal.extra || 0),
@@ -4312,8 +4412,15 @@
       });
       // The common Firestore marker is useful, but it must never delay the
       // confirmation of an already successful Sheets save.
-      void publishSharedSheetRow(vehicle.vin, response.row);
-      render(response.duplicate ? `Already saved in ${response.sheet} · row ${response.row}` : `Saved to ${response.sheet} · row ${response.row}`);
+      void publishSharedSheetRow(vehicle.vin, response.row, response.sheet || `${AUCTION_SITE} v2`);
+      const updatedFields = Array.isArray(response.updatedFields)
+        ? response.updatedFields.join(', ')
+        : '';
+      render(response.updated
+        ? `Updated ${updatedFields || 'missing values'} in ${response.sheet} · row ${response.row}`
+        : response.duplicate
+          ? `Already saved in ${response.sheet} · row ${response.row}`
+          : `Saved to ${response.sheet} · row ${response.row}`);
     } catch (error) {
       const message = `Could not save to ${AUCTION_SITE} sheet: ${error.message || error}`;
       render(message);
@@ -4390,7 +4497,9 @@
       #ove-kbb-panel .deal-field .input-wrap{display:flex;align-items:center;height:37px;border:1px solid #ccd4df;border-radius:8px;background:#fff;overflow:hidden}
       #ove-kbb-panel .deal-field .input-wrap span{padding-left:9px;color:#7a8492;font-weight:700}
       #ove-kbb-panel .deal-field input{width:100%;height:35px;padding:0 8px;border:0;outline:0;background:transparent;color:#30343b;font:750 14px system-ui}
+      #ove-kbb-panel .deal-field output{width:100%;padding:0 8px;color:#30343b;font:750 14px system-ui;white-space:nowrap}
       #ove-kbb-panel .delivery-note{margin-top:4px;color:#8da0bc;font-size:9px;line-height:1.25;text-transform:none}
+      #ove-kbb-panel .delivery-auto-button{margin-left:4px;padding:1px 5px;border:1px solid #9ab9df;border-radius:5px;background:#fff;color:#1769aa;font:700 9px/1.35 system-ui,-apple-system,sans-serif;cursor:pointer}
       #ove-kbb-panel .deal-recommended{display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:10px 12px;
         border-radius:9px;background:#eaf1ff;color:#174d9b}
       #ove-kbb-panel .deal-recommended .value{font-size:20px;color:#174d9b}
@@ -4442,6 +4551,7 @@
       #ove-kbb-panel[data-theme="dark"] #vin-marker-account-row select,
       #ove-kbb-panel[data-theme="dark"] #ove-vin-marker-slot select{background:#0f172a!important;color:#e5e7eb!important;border-color:#475569!important}
       #ove-kbb-panel[data-theme="dark"] .deal-field input{color:#e5e7eb}
+      #ove-kbb-panel[data-theme="dark"] .deal-field output{color:#e5e7eb}
       #ove-kbb-panel[data-theme="dark"] .label,
       #ove-kbb-panel[data-theme="dark"] .section-title,
       #ove-kbb-panel[data-theme="dark"] .deal-field label{color:#94a3b8}
@@ -4471,7 +4581,7 @@
       <button id="ove-kbb-close" title="Hide panel">×</button></div></header>
     <section id="ove-assistant-content">${IS_SUPPORTED_AUCTION ? '<div id="ove-vin-marker-card"><div class="marker-card-head"><div class="section-title">VIN Marker</div><div id="ove-vin-marker-account-slot"></div></div><div id="ove-vin-marker-slot"></div></div>' : ''}
       <div class="body"><div id="ove-kbb-content">Reading ${AUCTION_SITE}…</div>
-        <div id="ove-update-footer"><span>v${SCRIPT_VERSION}</span></div></div></section>`;
+        <div id="ove-update-footer"><span>v${SCRIPT_VERSION_LABEL}</span></div></div></section>`;
     document.documentElement.appendChild(panel);
     const toggle = document.createElement('button');
     toggle.id = 'ove-assistant-toggle';
@@ -4544,7 +4654,7 @@
   function refreshUpdateFooter() {
     const footer = document.getElementById('ove-update-footer');
     if (!footer) return;
-    footer.innerHTML = `<span>v${SCRIPT_VERSION}</span>${availableUpdate ?
+    footer.innerHTML = `<span>v${SCRIPT_VERSION_LABEL}</span>${availableUpdate ?
       `<button id="ove-update-now" title="Install latest version">Update to v${availableUpdate.version}</button>` : ''}`;
     const button = document.getElementById('ove-update-now');
     if (button) button.onclick = () => window.open(availableUpdate.url || UPDATE_SCRIPT_URL, '_blank', 'noopener');
@@ -4599,7 +4709,9 @@
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
   const DELIVERY_DESTINATION = { zip:'90045', lat:33.9581, lon:-118.3890 };
-  const DELIVERY_RATE_VERSION = '2026-08-manheim-v6';
+  // Bump this only when location parsing changes, so an old failed lookup is
+  // retried once with the new parser instead of remaining stuck in cache.
+  const DELIVERY_RATE_VERSION = '2026-08-ove-location-v8';
   // A failed location lookup used to trigger render -> lookup -> render forever.
   // Keep the failure cached long enough to protect the auction tab's main thread.
   const DELIVERY_FAILURE_RETRY_MS = 30 * 60 * 1000;
@@ -4607,6 +4719,11 @@
   // us a branch label but no ZIP. Add entries only after verifying the branch.
   const MANHEIM_FACILITY_POINTS = {
     'manheim dallas fort worth': { lat:32.8154004, lon:-97.1047124, zip:'76040', label:'Manheim Dallas-Fort Worth' },
+  };
+  // Some Simulcast cards show only the auction marketing name.  Use the
+  // verified ZIP to calculate delivery without scanning the heavy page.
+  const MANHEIM_FACILITY_ZIPS = {
+    'rome auto auction powered by manheim': { zip:'30145', label:'Rome Auto Auction Powered by Manheim' },
   };
   const deliveryLookups = new Map();
   function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
@@ -4668,9 +4785,26 @@
       .slice(0, 160)
       .map((node) => (node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 600))
       .filter(Boolean).join('\n');
-    const embedded = [...document.querySelectorAll('script[type="application/ld+json"],script#__NEXT_DATA__')]
+    const structured = [...document.querySelectorAll('script[type="application/ld+json"],script#__NEXT_DATA__')]
       .slice(0, 8).map((node) => (node.textContent || '').slice(0, 200000)).join('\n');
-    const value = { text:visible.slice(0, 60000), embedded:embedded.slice(0, 250000) };
+    // OVE usually mounts the location after the lightweight vehicle header.
+    // Its page state can be a normal inline script, not __NEXT_DATA__.  Copy
+    // only a few tiny windows around location keys; never serialize scripts
+    // or the photo-gallery as a whole.
+    const locationKey = /(?:auctionLocation|vehicleLocation|pickupLocation|postalCode|locationName|facilityName|branchName|auctionName|physicalAddress)/ig;
+    const snippets = [];
+    for (const node of [...document.scripts].slice(0, 80)) {
+      const source = node.textContent || '';
+      if (!source || source.length > 2500000) continue;
+      locationKey.lastIndex = 0;
+      let match;
+      let count = 0;
+      while ((match = locationKey.exec(source)) && count++ < 8 && snippets.length < 60) {
+        snippets.push(source.slice(Math.max(0, match.index - 180), Math.min(source.length, match.index + 560)));
+      }
+      if (snippets.length >= 60) break;
+    }
+    const value = { text:visible.slice(0, 60000), embedded:`${structured}\n${snippets.join('\n')}`.slice(0, 300000) };
     compactContextCache = { url:location.href, at:now, value };
     return value;
   }
@@ -4694,7 +4828,7 @@
     const context = compactPageContext();
     const text = context.text;
     const html = context.embedded;
-    const attributeParts = AUCTION_SITE === 'MANHEIM' ? [...document.querySelectorAll([
+    const attributeParts = [...document.querySelectorAll([
       '[data-auction-location]','[data-vehicle-location]','[data-pickup-location]',
       '[data-location-name]','[data-facility-name]','[data-branch-name]',
       '[data-postal-code]','[data-zip]','[itemprop="address"]','[itemprop="postalCode"]'
@@ -4702,7 +4836,7 @@
       const attrs = ['data-auction-location','data-vehicle-location','data-pickup-location','data-location-name','data-facility-name','data-branch-name','data-postal-code','data-zip','content']
         .map((name) => node.getAttribute(name) || '').filter(Boolean).join(' ');
       return `${attrs} ${(node.textContent || '').replace(/\s+/g, ' ')}`.trim().slice(0, 500);
-    }).filter(Boolean).join('\n') : '';
+    }).filter(Boolean).join('\n');
     // Current Manheim VDP exposes the exact pickup branch in this one small
     // field, e.g. "TX - Manheim Dallas-Fort Worth". Prefix it with a stable
     // label so the normal location parser can use it without scanning the VDP.
@@ -4710,13 +4844,13 @@
       ? (document.querySelector('[data-test-id="find-at-auction"] [class*="pickup-location" i], [class*="find-at-auction"] [class*="pickup-location" i]')?.textContent || '')
           .replace(/\s+/g, ' ').trim().slice(0, 140)
       : '';
-    const locationLinks = AUCTION_SITE === 'MANHEIM' ? [...document.querySelectorAll([
+    const locationLinks = [...document.querySelectorAll([
       'a[href*="location" i]','a[href*="auction" i]','a[href*="event" i]','a[href*="sale" i]'
     ].join(','))].slice(0, 60).map((node) => {
       const label = (node.textContent || '').replace(/\s+/g, ' ').trim();
       const href = node.getAttribute('href') || '';
       return `${label} ${href}`.trim().slice(0, 500);
-    }).filter(Boolean).join('\n') : '';
+    }).filter(Boolean).join('\n');
     const locationContext = `${text}\n${attributeParts}\n${manheimPickup ? `Vehicle Location: ${manheimPickup}` : ''}\n${locationLinks}`;
     let labeledZip = locationContext.match(/(?:Pickup|Vehicle Location|Auction Location|Location|Branch|Yard|Facility)[^\n]{0,180}?\b(\d{5})(?:-\d{4})?\b/i)?.[1] ||
       html.match(/["'](?:postalCode|postal_code|zipCode|zip_code|zip)["']\s*:\s*["']?(\d{5})(?:-\d{4})?/i)?.[1] ||
@@ -4724,13 +4858,32 @@
     const mapLink = [...document.querySelectorAll('a[href*="google.com/maps"],a[href*="maps.google"],a[href*="maps.apple"]')]
       .find((link) => /direction|map|location|pickup|auction/i.test(`${link.textContent || ''} ${link.href}`));
     if (!labeledZip && mapLink) labeledZip = `${mapLink.textContent || ''} ${mapLink.href}`.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] || '';
+    // OVE's detail page renders the useful address as a compact pair such as
+    // "Vehicle Location  At Auction, TX - America's Auto Auction San Antonio".
+    // It is not always placed on a separate text line, so read this small,
+    // explicit label before applying the generic location parser below.
+    const oveVehicleLocation = AUCTION_SITE === 'OVE'
+      ? ([
+          // Current OVE VDP: the address is a dedicated value span directly
+          // beside the "Vehicle Location" label. Read it first instead of
+          // depending on a broader page snapshot that can mount late.
+          document.querySelector('.vehicle-seller-info__location-value')?.textContent,
+          document.querySelector('[class*="vehicle-seller-info"] [class*="location-value"]')?.textContent,
+          locationContext.match(/Vehicle\s+Location\s*:?\s*((?:At\s+Auction,\s*)?[A-Z]{2}\s*[-–—]\s*[^\n]{3,120})/i)?.[1]
+        ].find((value) => /(?:At\s+Auction,\s*)?[A-Z]{2}\s*[-–—]\s*/i.test(value || '')) || '')
+          .replace(/\s+/g, ' ').trim().slice(0, 140)
+      : '';
+    const oveAuctionHouse = AUCTION_SITE === 'OVE'
+      ? locationContext.match(/Auction\s+House\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim()
+      : '';
     const pickup = locationContext.match(/(?:^|\n)\s*(?:Pickup|Vehicle Location|Located at)\s*:?\s*([^\n]{3,100})/im)?.[1]?.trim();
     const auctionLocation = locationContext.match(/(?:Auction Location|Branch|Yard|Facility|Sale Location|Facilitating Location)\s*:?\s*([^\n]{3,140})/i)?.[1]?.trim();
     const embeddedLocation = html.match(/["'](?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
+      html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation)[\s\S]{0,260}?["'](?:name|locationName|facilityName|branchName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
       html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")([^"'&{}]{3,100})/i)?.[1]?.trim();
     const copartLocation = AUCTION_SITE === 'COPART'
       ? text.match(/(?:Location|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim() : '';
-    let label = pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
+    let label = oveVehicleLocation || oveAuctionHouse || pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
     if (!label) {
       try {
         const pageUrl = new URL(location.href);
@@ -4750,6 +4903,15 @@
           return value.length >= 4 && value.length <= 100 && !/^Manheim Locations?$/i.test(value);
         });
       label = (locationLink?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    if (!labeledZip && AUCTION_SITE === 'MANHEIM' && label) {
+      const facilityKey = String(label).replace(/^[A-Z]{2}\s*-\s*/i, '')
+        .toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+      const facility = MANHEIM_FACILITY_ZIPS[facilityKey];
+      if (facility) {
+        labeledZip = facility.zip;
+        label = facility.label;
+      }
     }
     return labeledZip || label ? { zip:labeledZip, label:label || `ZIP ${labeledZip}` } : null;
   }
@@ -4782,7 +4944,10 @@
     }
     if (!point && origin.label) {
       const query = origin.label.replace(/\b(?:Manheim|OVE)\b/ig, ' ')
-        .replace(/^([A-Z]{2})\s*-\s*(.+)$/i, '$2, $1').replace(/\s+/g, ' ').trim();
+        // OVE commonly says "At Auction, TX - Auction name".  Nominatim is
+        // much more reliable with the city/auction name followed by the state.
+        .replace(/^At\s+Auction,\s*([A-Z]{2})\s*[-–—]\s*(.+)$/i, '$2, $1')
+        .replace(/^([A-Z]{2})\s*[-–—]\s*(.+)$/i, '$2, $1').replace(/\s+/g, ' ').trim();
       try {
         const results = await jsonRequest(`https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&limit=1&q=${encodeURIComponent(query)}`);
         const place = Array.isArray(results) ? results[0] : null;
@@ -4975,10 +5140,11 @@
     const recommendedFee = config.feeManual ? config.fee : automaticAuctionFee(recommendedBuy);
     const purchase = config.purchasePrice;
     const fee = config.feeManual ? config.fee : automaticAuctionFee(purchase || recommendedBuy);
+    const totalCost = purchase > 0 ? purchase + fee + config.delivery + config.extra : null;
     const profitMax = purchase > 0 ? saleMax - fee - config.delivery - config.extra - purchase : null;
     const profitMin = purchase > 0 ? saleMin - fee - config.delivery - config.extra - purchase : null;
     return {
-      saleMax, saleAverage, saleMin, fee, recommendedFee, recommendedBuy,
+      saleMax, saleAverage, saleMin, fee, recommendedFee, recommendedBuy, totalCost,
       profitMax, profitAverage: purchase > 0 ? (profitMax + profitMin) / 2 : null, profitMin,
     };
   }
@@ -4990,6 +5156,10 @@
     const config = readDealSettings(vin);
     const deliveryEstimate = GM_getValue(deliveryEstimateKey(vin), null);
     const deal = calculateDeal(values, carfax, config);
+    // This must remain visible even while KBB/CARFAX are still loading.
+    const totalCost = config.purchasePrice > 0
+      ? config.purchasePrice + (config.feeManual ? config.fee : automaticAuctionFee(config.purchasePrice)) + config.delivery + config.extra
+      : null;
     return `<details class="card deal-card" open><summary><span>Deal Calculator</span><span>Profit & purchase ▾</span></summary>
       <div class="deal-body">
         <div class="deal-note">Sale estimate from KBB Fair, KBB Good and CARFAX Retail</div>
@@ -4997,12 +5167,15 @@
         <div class="deal-inputs">
           <div class="deal-field"><label>Minimum profit</label><div class="input-wrap"><span>$</span><input data-deal="targetProfit" inputmode="numeric" value="${config.targetProfit || ''}"></div></div>
           <div class="deal-field"><label>Auction fee · ${config.feeManual ? 'Manual' : `Est. ${AUCTION_SITE}${isManheimSimulcast() ? ' Simulcast' : ''}`}</label><div class="input-wrap"><span>$</span><input data-deal="fee" inputmode="numeric" value="${deal ? Math.round(deal.fee) : (config.feeManual ? config.fee : '')}" placeholder="Auto"></div></div>
-          <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="Detecting…"></div>
+          <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual <button type="button" class="delivery-auto-button" id="ove-delivery-auto">Auto</button>' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="Detecting…"></div>
             <div class="delivery-note">${deliveryEstimate?.price ? `${deliveryEstimate.origin}${deliveryEstimate.originZip ? ` ${deliveryEstimate.originZip}` : ''} · ~${number(deliveryEstimate.miles)} mi · ${deliveryEstimate.vehicleType}${deliveryEstimate.isRunning ? '' : ' · non-running'}` : (deliveryEstimate?.error || 'Detecting auction location and route…')}</div></div>
           <div class="deal-field"><label>Additional costs</label><div class="input-wrap"><span>$</span><input data-deal="extra" inputmode="numeric" value="${config.extra || ''}" placeholder="0"></div></div>
         </div>
         <div class="deal-recommended"><div><div class="label">Recommended max buy</div><div style="font-size:10px;opacity:.8">Includes profit, fee and costs</div></div><div class="value">${money(deal?.recommendedBuy)}</div></div>
-        <div class="deal-field" style="margin-top:10px"><label>Your purchase price</label><div class="input-wrap"><span>$</span><input data-deal="purchasePrice" inputmode="numeric" value="${config.purchasePrice || ''}" placeholder="Enter price"></div></div>
+        <div class="deal-inputs" style="margin-top:10px">
+          <div class="deal-field"><label>Your purchase price</label><div class="input-wrap"><span>$</span><input data-deal="purchasePrice" inputmode="numeric" value="${config.purchasePrice || ''}" placeholder="Enter price"></div></div>
+          <div class="deal-field"><label>Total</label><div class="input-wrap"><span>$</span><output>${money(totalCost)}</output></div></div>
+        </div>
         <div class="deal-three deal-profit">${dealStat('Max profit', deal?.profitMax)}${dealStat('Average', deal?.profitAverage)}${dealStat('Min profit', deal?.profitMin)}</div>
         ${deal ? `<div class="deal-note">Calculated fee: ${money(deal.fee)} · clear field to return to Auto</div>` : '<div class="deal-note">Waiting for KBB Fair, KBB Good and CARFAX Retail values.</div>'}
       </div></details>`;
@@ -5029,6 +5202,13 @@
         render();
       };
     });
+    const autoDeliveryButton = document.getElementById('ove-delivery-auto');
+    if (autoDeliveryButton) autoDeliveryButton.onclick = () => {
+      const key = `${DEAL_SETTINGS_KEY}:${vin}`;
+      const vehicle = GM_getValue(key, {}) || {};
+      GM_setValue(key, { ...vehicle, deliveryManual:false });
+      render('Automatic delivery enabled.');
+    };
   }
   function carfaxValueStatus(job, vehicle, fallback) {
     if (job?.vin !== vehicle.vin) return fallback;
@@ -5068,7 +5248,17 @@
   function render(message = '') {
     makePanel();
     const vehicle = readVehicle(); const config = settings();
-    const sheetSaved = vehicle.vin ? GM_getValue(`auctionAssistantSheetSaved:${AUCTION_SITE}:${vehicle.vin}`, null) : null;
+    if (vehicle.vin && !sheetVehicleHydratedVins.has(vehicle.vin)) {
+      void hydrateSheetVehicleDeal(vehicle).then((changed) => {
+        if (changed && readVehicle().vin === vehicle.vin) render('Loaded shared deal values from the sheet.');
+      });
+    }
+    const locallySaved = vehicle.vin
+      ? GM_getValue(`auctionAssistantSheetSaved:${AUCTION_SITE}:${vehicle.vin}`, null)
+      : null;
+    const sheetSaved = locallySaved || (HISTORICAL_SHEET_SAVED_VINS.has(vehicle.vin)
+      ? { row:'historic', sheet:`${AUCTION_SITE} v2`, savedAt:0 }
+      : null);
     const result = vehicle.vin ? GM_getValue(`oveKbbPrivateResult:${vehicle.vin}`, null) : null;
     const job = vehicle.vin ? GM_getValue(kbbJobKey(vehicle.vin), null) : null;
     const active = job?.vin === vehicle.vin && !job.completedAt;
@@ -5232,6 +5422,22 @@
     ];
     return roots.flatMap((value) => Array.isArray(value) ? value : []).filter(Boolean);
   }
+  async function findCarfaxHistoryRecord(vin) {
+    const response = await carfaxRequest('GET', 'https://carfax-app.vercel.app/api/pro/requests');
+    if (response.status < 200 || response.status >= 300) return null;
+    let payload = {}; try { payload = JSON.parse(response.responseText || '{}'); } catch (_) {}
+    const match = carfaxHistoryRecords(payload).find((record) => {
+      const recordVin = record?.vin || record?.vehicle?.vin || record?.request?.vin;
+      return String(recordVin || '').toUpperCase() === String(vin || '').toUpperCase();
+    });
+    if (!match) return null;
+    const requestId = match.id || match.requestId || match.request?.id;
+    const reportUrl = match.reportUrl || match.url ||
+      (requestId ? `https://carfax-app.vercel.app/pro/report/${requestId}` : '');
+    return /^https:\/\/carfax-app\.vercel\.app\/pro\/report\/[^/?#]+/i.test(reportUrl)
+      ? { requestId, reportUrl, record:match }
+      : null;
+  }
   async function findSavedCarfax(vehicle) {
     const vin = vehicle.vin.toUpperCase();
     const local = GM_getValue(`oveCarfaxResult:${vin}`, null);
@@ -5246,28 +5452,16 @@
       }
     } catch (_) {}
     try {
-      const response = await carfaxRequest('GET', 'https://carfax-app.vercel.app/api/pro/requests');
-      if (response.status >= 200 && response.status < 300) {
-        let payload = {}; try { payload = JSON.parse(response.responseText || '{}'); } catch (_) {}
-        const match = carfaxHistoryRecords(payload).find((record) => {
-          const recordVin = record?.vin || record?.vehicle?.vin || record?.request?.vin;
-          return String(recordVin || '').toUpperCase() === vin;
-        });
-        if (match) {
-          const requestId = match.id || match.requestId || match.request?.id;
-          const reportUrl = match.reportUrl || match.url ||
-            (requestId ? `https://carfax-app.vercel.app/pro/report/${requestId}` : '');
-          if (/^https:\/\/carfax-app\.vercel\.app\/pro\/report\/[^/?#]+/i.test(reportUrl)) {
-            const saved = {
-              ...local, vin, title:local?.title || match.title || match.vehicleTitle || vehicle.title || '',
-              reportUrl, requestId, completedAt:Number(local?.completedAt || Date.now()),
-              savedSource:'CARFAX history',
-            };
-            GM_setValue(`oveCarfaxResult:${vin}`, saved);
-            publishSharedResult(vin, vehicle);
-            return saved;
-          }
-        }
+      const history = await findCarfaxHistoryRecord(vin);
+      if (history) {
+        const saved = {
+          ...local, vin, title:local?.title || history.record.title || history.record.vehicleTitle || vehicle.title || '',
+          reportUrl:history.reportUrl, requestId:history.requestId,
+          completedAt:Number(local?.completedAt || Date.now()), savedSource:'CARFAX history',
+        };
+        GM_setValue(`oveCarfaxResult:${vin}`, saved);
+        publishSharedResult(vin, vehicle);
+        return saved;
       }
     } catch (_) {}
     return null;
@@ -5355,12 +5549,30 @@
       GM_setValue(CARFAX_JOB_KEY, { ...pending, reportUrl, requestId, stage: 'Generating CARFAX report' });
       if (payload.htmlContent && saveCarfaxText(carfaxHtmlToText(payload.htmlContent), reportUrl, payload.htmlContent)) return;
 
-      for (let attempt = 0; attempt < 80; attempt++) {
-        await sleep(1250);
+      // Poll the report page quickly at the beginning, then use CARFAX history
+      // as a recovery path.  History often knows about a completed report a
+      // few seconds before its embedded file URL is present in the page.
+      for (let attempt = 0; attempt < 70; attempt++) {
+        await sleep(attempt < 12 ? 750 : 1000);
         const current = GM_getValue(CARFAX_JOB_KEY, null);
         if (!current || current.completedAt) return;
+        let currentReportUrl = current.reportUrl || reportUrl;
+        if (attempt > 0 && attempt % 5 === 0) {
+          try {
+            const history = await findCarfaxHistoryRecord(vehicle.vin);
+            if (history?.reportUrl) {
+              currentReportUrl = history.reportUrl;
+              if (history.reportUrl !== current.reportUrl) {
+                GM_setValue(CARFAX_JOB_KEY, {
+                  ...current, reportUrl:history.reportUrl, requestId:history.requestId,
+                  stage:'Reading ready CARFAX from history',
+                });
+              }
+            }
+          } catch (_) {}
+        }
         // The completed report page contains a short-lived signed URL to the CARFAX HTML file.
-        const page = await carfaxRequest('GET', reportUrl);
+        const page = await carfaxRequest('GET', currentReportUrl);
         if (page.status === 200) {
           const normalized = (page.responseText || '').replace(/\\\//g, '/').replace(/\\u0026/g, '&');
           const fileMatch = normalized.match(/(?:https:\/\/carfax-app\.vercel\.app)?\/api\/files\/[^"'<>\s]+/i);
@@ -5369,12 +5581,19 @@
             const file = await carfaxRequest('GET', fileUrl);
             if (file.status === 200) {
               const decoded = carfaxHtmlToText(file.responseText);
-              if (saveCarfaxText(decoded, reportUrl, file.responseText)) return;
+              // After roughly 17 seconds accept a completed report whose
+              // compact response lacks the accident summary.  Its link and
+              // other information still appear immediately in the sidebar.
+              if (saveCarfaxText(decoded, currentReportUrl, file.responseText, attempt >= 16)) return;
             }
           }
+          // Some completed reports no longer expose a separate /api/files/
+          // URL. Their report page itself contains the history payload.
+          const pageText = carfaxHtmlToText(page.responseText || '');
+          if (saveCarfaxText(pageText, currentReportUrl, page.responseText || '', attempt >= 16)) return;
         }
         pending = GM_getValue(CARFAX_JOB_KEY, {});
-        GM_setValue(CARFAX_JOB_KEY, { ...pending, stage: `Generating CARFAX report · ${attempt + 1}s` });
+        GM_setValue(CARFAX_JOB_KEY, { ...pending, stage: `Generating CARFAX report · ${Math.round((attempt < 12 ? (attempt + 1) * .75 : 9 + (attempt - 11)))}s` });
       }
       throw new Error('CARFAX report timed out');
     } catch (error) {
@@ -5453,7 +5672,17 @@
     GM_setValue(kbbJobKey(vehicle.vin), { ...vehicle, stage:'Connecting to server KBB', progress:2, startedAt:Date.now() });
     render();
     try {
-      if (mode === 'both') startCarfaxValue(vehicle, config.zip);
+      // Check VIN means the actual CARFAX history report plus KBB. The
+      // retail-value page is intentionally left to its GET VALUE button.
+      if (mode === 'both') {
+        const currentCarfax = GM_getValue(CARFAX_JOB_KEY, null);
+        if (!(currentCarfax?.vin === vehicle.vin && !currentCarfax.completedAt)) {
+          void startCarfax(vehicle).then(outcome => {
+            if (outcome?.error) render(outcome.error);
+            else render();
+          });
+        }
+      }
       try {
         const direct = await requestDirectKbb(vehicle, config.zip);
         savePartial(vehicle, config, direct);
@@ -5499,6 +5728,30 @@
     }
   }
   makePanel(); render();
+  // OVE can return from its Manheim sign-in flow by restoring the same SPA
+  // document. In that case a previous page lifecycle can remove our fixed
+  // sidebar after this userscript has already started. Re-create it only on
+  // the return/initial settling events; do not add a permanent page observer.
+  let assistantUiRecoveryTimer = null;
+  function ensureAssistantUiIsMounted() {
+    if (!document.body || document.getElementById('ove-kbb-panel')) return;
+    try {
+      makePanel();
+      render();
+    } catch (_) {
+      // The next bounded check below handles a document that is still mounting.
+    }
+  }
+  function scheduleAssistantUiRecovery(delay = 0) {
+    clearTimeout(assistantUiRecoveryTimer);
+    assistantUiRecoveryTimer = setTimeout(ensureAssistantUiIsMounted, delay);
+  }
+  window.addEventListener('pageshow', () => scheduleAssistantUiRecovery(250));
+  window.addEventListener('focus', () => scheduleAssistantUiRecovery(250));
+  // OVE mounts the post-login shell asynchronously. Two short checks cover
+  // that transition without polling the auction page afterward.
+  scheduleAssistantUiRecovery(1000);
+  setTimeout(() => scheduleAssistantUiRecovery(0), 3500);
   GM_addValueChangeListener(CARFAX_JOB_KEY, () => {
     const current = GM_getValue(CARFAX_JOB_KEY, null);
     render();
@@ -5516,6 +5769,7 @@
   let lastVehicleSignature = '';
   let helperVehicleStable = false;
   let helperStopped = false;
+  let deliveryMountAttempts = 0;
   function refreshIfVehicleChanged(force = false) {
     const vehicle = readVehicle();
     const signature = `${location.href}|${vehicle.vin}|${vehicle.mileage}|${vehicle.title}|${vehicle.color}`;
@@ -5556,6 +5810,7 @@
       lastVehicleSignature = '';
       helperVehicleStable = false;
       helperLoadAttempts = 0;
+      deliveryMountAttempts = 0;
       auctionTextCache = { url:'', at:0, text:'' };
       if (helperIsDetailPage() && helperObserverActive) {
         helperObserver.disconnect();
@@ -5571,6 +5826,14 @@
       helperLoadAttempts += 1;
       auctionTextCache = { url:'', at:0, text:'' };
       refreshIfVehicleChanged(false);
+    }
+    // OVE commonly mounts its auction-location block after VIN/title are
+    // already stable. Run only a few bounded refreshes so a late location can
+    // start delivery calculation without a permanent observer or polling.
+    if (helperIsDetailPage() && AUCTION_SITE === 'OVE' && deliveryMountAttempts < 4) {
+      deliveryMountAttempts += 1;
+      compactContextCache = { url:'', at:0, value:null };
+      render();
     }
   }, 1500);
   window.addEventListener('pagehide', () => {
