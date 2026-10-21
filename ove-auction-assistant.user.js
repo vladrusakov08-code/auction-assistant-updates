@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OVE Auction Assistant — VIN Marker + KBB + CARFAX
 // @namespace    vord.tools
-// @version      2.7.42-beta
+// @version      2.7.44
 // @description  One collapsible sidebar with shared VIN history, KBB Private Party values, and CARFAX summary.
 // @match        *://ove.com/*
 // @match        *://www.ove.com/*
@@ -94,6 +94,9 @@
             ? 'copartIvanLots'
             : 'ivanVins';
 
+    const ARTEM_CLOUD_FIELD = SITE === 'copart' ? 'copartArtemLots' : 'artemVins';
+    const DAILY_ARTEM_CLOUD_FIELD = SITE === 'copart' ? 'copartDailyArtemMarks' : 'dailyArtemMarks';
+
     const UPDATED_CLOUD_FIELD =
         SITE === 'copart'
             ? 'copartUpdatedAt'
@@ -118,11 +121,13 @@
     const VLAD = 'vlad';
     const WORKER = 'worker';
     const IVAN = 'ivan';
+    const ARTEM = 'artem';
 
     const COLORS = {
         vlad: '#16843d',
         worker: '#7b2cbf',
         ivan: '#e83e8c',
+        artem: '#00ffff',
         vadimIvan: 'linear-gradient(90deg, #7b2cbf 0%, #7b2cbf 50%, #e83e8c 50%, #e83e8c 100%)',
         both: '#d60000'
     };
@@ -183,9 +188,11 @@
     let vladVins = new Set();
     let workerVins = new Set();
     let ivanVins = new Set();
+    let artemVins = new Set();
     let dailyVladMarks = new Set();
     let dailyWorkerMarks = new Set();
     let dailyIvanMarks = new Set();
+    let dailyArtemMarks = new Set();
     let statsMode = 'today';
     let hideMode = 'show';
     const filteredCards = new Set();
@@ -195,7 +202,7 @@
     let lastPaintedOccurrences = [];
     let lastAuctionFingerprint = '';
     let activeUser = GM_getValue(ACTIVE_USER_STORAGE, '');
-    if (![VLAD, WORKER, IVAN].includes(activeUser)) activeUser = '';
+    if (![VLAD, WORKER, IVAN, ARTEM].includes(activeUser)) activeUser = '';
 
     let auth = loadSharedAuthentication();
     let cloudBusy = false;
@@ -246,11 +253,12 @@
         dailyVladMarks = new Set(Array.isArray(saved.vlad) ? saved.vlad.filter(validDailyMark) : []);
         dailyWorkerMarks = new Set(Array.isArray(saved.worker) ? saved.worker.filter(validDailyMark) : []);
         dailyIvanMarks = new Set(Array.isArray(saved.ivan) ? saved.ivan.filter(validDailyMark) : []);
+        dailyArtemMarks = new Set(Array.isArray(saved.artem) ? saved.artem.filter(validDailyMark) : []);
     }
 
     function saveDailyMarks() {
         GM_setValue(DAILY_STORAGE, {
-            vlad: [...dailyVladMarks], worker: [...dailyWorkerMarks], ivan: [...dailyIvanMarks]
+            vlad: [...dailyVladMarks], worker: [...dailyWorkerMarks], ivan: [...dailyIvanMarks], artem: [...dailyArtemMarks]
         });
     }
 
@@ -357,6 +365,7 @@
                 validStoredIdentifier
             )
         );
+        artemVins = new Set(shared.artem.filter(validStoredIdentifier));
 
         const alreadyMigrated =
             Boolean(
@@ -405,6 +414,8 @@
                 .forEach(vin => {
                     ivanVins.add(vin);
                 });
+            (Array.isArray(saved.artem) ? saved.artem : [])
+                .filter(validStoredIdentifier).forEach(vin => artemVins.add(vin));
 
             const oldVins =
                 loadJson(
@@ -456,13 +467,15 @@
                 ivan:
                     Array.isArray(parsed.ivan)
                         ? parsed.ivan
-                        : []
+                        : [],
+                artem: Array.isArray(parsed.artem) ? parsed.artem : []
             };
         } catch (_) {
             return {
                 vlad: [],
                 worker: [],
-                ivan: []
+                ivan: [],
+                artem: []
             };
         }
     }
@@ -488,13 +501,15 @@
                 validStoredIdentifier
             )
         );
+        artemVins = new Set(shared.artem.filter(validStoredIdentifier));
     }
 
     function saveLocalVinState() {
         const state = {
             vlad: [...vladVins],
             worker: [...workerVins],
-            ivan: [...ivanVins]
+            ivan: [...ivanVins],
+            artem: [...artemVins]
         };
 
         saveJson(
@@ -805,6 +820,8 @@
                     ]
                 ),
 
+                artem: readStringArray(document.fields?.[ARTEM_CLOUD_FIELD]),
+                dailyArtem: readDailyArray(document.fields?.[DAILY_ARTEM_CLOUD_FIELD]),
                 dailyVlad: readDailyArray(document.fields?.[DAILY_VLAD_CLOUD_FIELD]),
                 dailyWorker: readDailyArray(document.fields?.[DAILY_WORKER_CLOUD_FIELD]),
                 dailyIvan: readDailyArray(document.fields?.[DAILY_IVAN_CLOUD_FIELD])
@@ -816,6 +833,8 @@
                     vlad: [],
                     worker: [],
                     ivan: [],
+                    artem: [],
+                    dailyArtem: [],
                     dailyVlad: [],
                     dailyWorker: [],
                     dailyIvan: []
@@ -855,14 +874,18 @@
         const fieldPath =
             user === VLAD
                 ? VLAD_CLOUD_FIELD
-                : user === IVAN
+                : user === ARTEM
+                    ? ARTEM_CLOUD_FIELD
+                    : user === IVAN
                     ? IVAN_CLOUD_FIELD
                     : WORKER_CLOUD_FIELD;
 
         const dailyFieldPath =
             user === VLAD
                 ? DAILY_VLAD_CLOUD_FIELD
-                : user === IVAN
+                : user === ARTEM
+                    ? DAILY_ARTEM_CLOUD_FIELD
+                    : user === IVAN
                     ? DAILY_IVAN_CLOUD_FIELD
                     : DAILY_WORKER_CLOUD_FIELD;
 
@@ -908,7 +931,8 @@
     async function replaceCloudState(
         vlad,
         worker,
-        ivan
+        ivan,
+        artem
     ) {
         await ensureAuthentication();
 
@@ -929,6 +953,7 @@
                 encodeURIComponent(
                     IVAN_CLOUD_FIELD
                 ) +
+                '&updateMask.fieldPaths=' + encodeURIComponent(ARTEM_CLOUD_FIELD) +
                 '&updateMask.fieldPaths=' +
                 encodeURIComponent(
                     UPDATED_CLOUD_FIELD
@@ -948,6 +973,7 @@
                     [IVAN_CLOUD_FIELD]:
                         stringArrayValue(ivan),
 
+                    [ARTEM_CLOUD_FIELD]: stringArrayValue(artem),
                     [UPDATED_CLOUD_FIELD]: {
                         timestampValue:
                             new Date()
@@ -1116,6 +1142,8 @@
             cloud.ivan.forEach(vin => {
                 ivanVins.add(vin);
             });
+            cloud.artem.forEach(vin => artemVins.add(vin));
+            cloud.dailyArtem.forEach(mark => dailyArtemMarks.add(mark));
 
             (cloud.dailyVlad || []).forEach(mark => dailyVladMarks.add(mark));
             (cloud.dailyWorker || []).forEach(mark => dailyWorkerMarks.add(mark));
@@ -1169,7 +1197,11 @@
                 );
             }
 
+            const missingArtem = [...artemVins].filter(vin => !cloud.artem.includes(vin));
+            if (missingArtem.length) await appendVinsToCloud(ARTEM, missingArtem);
+
             if (
+                missingArtem.length ||
                 missingVlad.length ||
                 missingWorker.length ||
                 missingIvan.length
@@ -1806,33 +1838,22 @@
        COLORS
     ======================================== */
 
+    function markerColor(seenByVlad, seenByWorker, seenByIvan, seenByArtem) {
+        const teammates = [
+            seenByWorker && COLORS.worker,
+            seenByIvan && COLORS.ivan,
+            seenByArtem && COLORS.artem
+        ].filter(Boolean);
+        if (seenByVlad) return teammates.length ? COLORS.both : COLORS.vlad;
+        if (teammates.length < 2) return teammates[0] || null;
+        const stops = teammates.map((color, index) =>
+            `${color} ${index * 100 / teammates.length}%, ${color} ${(index + 1) * 100 / teammates.length}%`
+        );
+        return `linear-gradient(90deg, ${stops.join(', ')})`;
+    }
+
     function vinColor(vin) {
-        const seenByVlad =
-            vladVins.has(vin);
-
-        const seenByWorker =
-            workerVins.has(vin);
-
-        const seenByIvan =
-            ivanVins.has(vin);
-
-        if (seenByVlad && (seenByWorker || seenByIvan)) {
-            return COLORS.both;
-        }
-
-        if (seenByWorker && seenByIvan) return COLORS.vadimIvan;
-
-        if (seenByVlad) {
-            return COLORS.vlad;
-        }
-
-        if (seenByWorker) {
-            return COLORS.worker;
-        }
-
-        if (seenByIvan) return COLORS.ivan;
-
-        return null;
+        return markerColor(vladVins.has(vin), workerVins.has(vin), ivanVins.has(vin), artemVins.has(vin));
     }
 
     function occurrenceIdentifiers(item) {
@@ -1873,16 +1894,10 @@
                 appearsInDaily(dailyIvanMarks, identifier)
             );
 
-        if (seenByVlad && (seenByWorker || seenByIvan)) {
-            return COLORS.both;
-        }
-
-        if (seenByWorker && seenByIvan) return COLORS.vadimIvan;
-
-        if (seenByVlad) return COLORS.vlad;
-        if (seenByWorker) return COLORS.worker;
-        if (seenByIvan) return COLORS.ivan;
-        return null;
+        const seenByArtem = identifiers.some(identifier =>
+            artemVins.has(identifier) || appearsInDaily(dailyArtemMarks, identifier)
+        );
+        return markerColor(seenByVlad, seenByWorker, seenByIvan, seenByArtem);
     }
 
     function applyMarkedFilter(occurrences) {
@@ -1934,13 +1949,18 @@
             const seenByIvan = identifiers.some(identifier =>
                 ivanVins.has(identifier) || dailyContains(dailyIvanMarks, identifier)
             );
+            const seenByArtem = identifiers.some(identifier =>
+                artemVins.has(identifier) || dailyContains(dailyArtemMarks, identifier)
+            );
             const shouldHide = hideMode === 'all'
-                ? seenByVlad || seenByWorker || seenByIvan
+                ? seenByVlad || seenByWorker || seenByIvan || seenByArtem
                 : activeUser === VLAD
                     ? seenByVlad
                     : activeUser === WORKER
                         ? seenByWorker
-                        : activeUser === IVAN && seenByIvan;
+                        : activeUser === IVAN
+                            ? seenByIvan
+                            : activeUser === ARTEM && seenByArtem;
             const card = item.card;
             // This is deliberately cached on the occurrence.  Reading every
             // complete card's text on each filter click was costly on OVE
@@ -2005,7 +2025,7 @@
 
             if (identifiers.length < 2) return;
 
-            [vladVins, workerVins, ivanVins]
+            [vladVins, workerVins, ivanVins, artemVins]
                 .forEach(set => {
                     if (
                         !identifiers.some(identifier =>
@@ -2283,7 +2303,9 @@
         const targetSet =
             user === VLAD
                 ? vladVins
-                : user === IVAN
+                : user === ARTEM
+                    ? artemVins
+                    : user === IVAN
                     ? ivanVins
                     : workerVins;
 
@@ -2299,7 +2321,9 @@
 
         const dailySet = user === VLAD
             ? dailyVladMarks
-            : user === IVAN
+            : user === ARTEM
+                ? dailyArtemMarks
+                : user === IVAN
                 ? dailyIvanMarks
                 : dailyWorkerMarks;
         newlyAdded.forEach(vin => dailySet.add(`${todayKey()}|${vin}`));
@@ -2367,8 +2391,8 @@
     async function clearEverything() {
         const confirmed = confirm(
             SITE === 'copart'
-                ? 'Delete ALL Vlad and Worker Copart Lot history from every device?'
-                : 'Delete ALL Vlad and Worker VIN history from every device?'
+                ? 'Delete ALL Vlad, Vadim, Ivan and Artem Copart Lot history from every device?'
+                : 'Delete ALL Vlad, Vadim, Ivan and Artem VIN history from every device?'
         );
 
         if (!confirmed) return;
@@ -2381,19 +2405,22 @@
             await replaceCloudState(
                 [],
                 [],
+                [],
                 []
             );
 
             vladVins.clear();
             workerVins.clear();
             ivanVins.clear();
+            artemVins.clear();
 
             GM_setValue(
                 SHARED_VIN_STORAGE,
                 JSON.stringify({
                     vlad: [],
                     worker: [],
-                    ivan: []
+                    ivan: [],
+                    artem: []
                 })
             );
 
@@ -2597,7 +2624,7 @@
     const accountLabel = document.createElement('span');
     accountLabel.textContent = 'LOGGED IN AS';
     const accountSelect = document.createElement('select');
-    accountSelect.innerHTML = '<option value="">Log in</option><option value="vlad">Vlad</option><option value="worker">Vadim</option><option value="ivan">Ivan</option>';
+    accountSelect.innerHTML = '<option value="">Log in</option><option value="vlad">Vlad</option><option value="worker">Vadim</option><option value="ivan">Ivan</option><option value="artem">Artem</option>';
     accountSelect.value = activeUser;
     Object.assign(accountSelect.style, {
         border: '1px solid #ccd3dc', borderRadius: '6px', background: '#ffffff',
@@ -2708,13 +2735,14 @@
             new Set([
                 ...vladVins,
                 ...workerVins,
-                ...ivanVins
+                ...ivanVins,
+                ...artemVins
             ]);
 
         let both = 0;
 
         allVins.forEach(vin => {
-            if ([vladVins, workerVins, ivanVins].filter(set => set.has(vin)).length > 1) {
+            if ([vladVins, workerVins, ivanVins, artemVins].filter(set => set.has(vin)).length > 1) {
                 both++;
             }
         });
@@ -2741,8 +2769,7 @@
         if (SITE === 'copart') {
             both = countableIdentifiers
                 .filter(identifier =>
-                    vladVins.has(identifier) &&
-                    (workerVins.has(identifier) || ivanVins.has(identifier))
+                    [vladVins, workerVins, ivanVins, artemVins].filter(set => set.has(identifier)).length > 1
                 ).length;
         }
 
@@ -2754,18 +2781,20 @@
         const todayVlad = new Set(todayIdentifiers(dailyVladMarks));
         const todayWorker = new Set(todayIdentifiers(dailyWorkerMarks));
         const todayIvan = new Set(todayIdentifiers(dailyIvanMarks));
-        const todayAll = new Set([...todayVlad, ...todayWorker, ...todayIvan]);
-        const todayBoth = [...todayAll].filter(identifier => [todayVlad, todayWorker, todayIvan].filter(set => set.has(identifier)).length > 1).length;
+        const todayArtem = new Set(todayIdentifiers(dailyArtemMarks));
+        const todayAll = new Set([...todayVlad, ...todayWorker, ...todayIvan, ...todayArtem]);
+        const todayBoth = [...todayAll].filter(identifier => [todayVlad, todayWorker, todayIvan, todayArtem].filter(set => set.has(identifier)).length > 1).length;
 
         counter.textContent = statsMode === 'today'
-            ? `TODAY — ${itemLabel}: ${todayAll.size} | Vlad: ${todayVlad.size} | Vadim: ${todayWorker.size} | Ivan: ${todayIvan.size} | Shared: ${todayBoth}`
-            : `ALL TIME — ${itemLabel}: ${countableIdentifiers.length} | Vlad: ${countFor(vladVins)} | Vadim: ${countFor(workerVins)} | Ivan: ${countFor(ivanVins)} | Shared: ${both}`;
+            ? `TODAY — ${itemLabel}: ${todayAll.size} | Vlad: ${todayVlad.size} | Vadim: ${todayWorker.size} | Ivan: ${todayIvan.size} | Artem: ${todayArtem.size} | Shared: ${todayBoth}`
+            : `ALL TIME — ${itemLabel}: ${countableIdentifiers.length} | Vlad: ${countFor(vladVins)} | Vadim: ${countFor(workerVins)} | Ivan: ${countFor(ivanVins)} | Artem: ${countFor(artemVins)} | Shared: ${both}`;
 
         statsButton.textContent = statsMode === 'today' ? '📊' : '↩';
         statsButton.title = statsMode === 'today' ? 'Show all-time statistics' : 'Back to today';
-        const activeName = activeUser === VLAD ? 'VLAD' : activeUser === WORKER ? 'VADIM' : activeUser === IVAN ? 'IVAN' : '';
+        const activeName = activeUser === VLAD ? 'VLAD' : activeUser === WORKER ? 'VADIM' : activeUser === IVAN ? 'IVAN' : activeUser === ARTEM ? 'ARTEM' : '';
         vladButton.textContent = activeUser ? `MARK · ${activeName}` : 'LOG IN';
-        vladButton.style.background = activeUser === WORKER ? COLORS.worker : activeUser === IVAN ? COLORS.ivan : COLORS.vlad;
+        vladButton.style.background = activeUser === WORKER ? COLORS.worker : activeUser === IVAN ? COLORS.ivan : activeUser === ARTEM ? COLORS.artem : COLORS.vlad;
+        vladButton.style.color = activeUser === ARTEM ? '#083344' : '#ffffff';
 
         status.textContent =
             cloudStatus;
@@ -3121,7 +3150,7 @@
         () => {
             if (!activeUser) {
                 accountSelect.focus();
-                alert('Choose Vlad, Vadim or Ivan first.');
+                alert('Choose Vlad, Vadim, Ivan or Artem first.');
                 return;
             }
             markPage(
@@ -3341,8 +3370,8 @@
   // Keep the numeric version for safe update comparison and a separate label
   // for beta builds.  Previously this display value was left at 2.7.25 even
   // while Tampermonkey was correctly running the newer beta file.
-  const SCRIPT_VERSION = '2.7.40';
-  const SCRIPT_VERSION_LABEL = '2.7.40-beta';
+  const SCRIPT_VERSION = '2.7.44';
+  const SCRIPT_VERSION_LABEL = '2.7.44';
   const UPDATE_MANIFEST_URL =
     'https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/latest.json';
   const UPDATE_SCRIPT_URL =
@@ -4385,10 +4414,6 @@
         savedBy:GM_getValue('vin_marker_active_profile_v1', '') || '',
         kbbFair:Number(kbb.values?.fair?.value || 0), kbbGood:Number(kbb.values?.good?.value || 0),
         carfaxRetail, carfaxUrl,
-        // The shared sheet keeps the recommended bid and an optional manual
-        // purchase price in separate columns. Send both on every refresh.
-        recommendedBuy:Number(calculatedDeal?.recommendedBuy || 0),
-        targetProfit:Number(deal.targetProfit || 2000),
         purchasePrice:Number(deal.purchasePrice || 0),
         auctionFee:Number(calculatedDeal?.fee || 0),
         delivery:Number(deal.delivery || 0), extra:Number(deal.extra || 0),
@@ -4709,9 +4734,7 @@
     return `<svg viewBox="0 0 32 32" aria-label="${carfax?.owners || ''} owners"><g fill="#2477a9">${people}</g></svg>`;
   }
   const DELIVERY_DESTINATION = { zip:'90045', lat:33.9581, lon:-118.3890 };
-  // Bump this only when location parsing changes, so an old failed lookup is
-  // retried once with the new parser instead of remaining stuck in cache.
-  const DELIVERY_RATE_VERSION = '2026-08-ove-location-v8';
+  const DELIVERY_RATE_VERSION = '2026-10-pickup-v9';
   // A failed location lookup used to trigger render -> lookup -> render forever.
   // Keep the failure cached long enough to protect the auction tab's main thread.
   const DELIVERY_FAILURE_RETRY_MS = 30 * 60 * 1000;
@@ -4728,7 +4751,7 @@
   const deliveryLookups = new Map();
   function deliveryEstimateKey(vin) { return `auctionAssistantDeliveryEstimate:${vin}`; }
   function deliveryOriginSignature(origin) {
-    return `${DELIVERY_RATE_VERSION}|${origin?.zip || ''}|${origin?.label || ''}|${location.href}`;
+    return `${DELIVERY_RATE_VERSION}|${origin?.zip || ''}|${origin?.label || ''}|${origin?.lat || ''},${origin?.lon || ''}`;
   }
   async function withDeliveryDeadline(task, ms = 18000) {
     let timer;
@@ -4822,7 +4845,60 @@
       ontimeout:() => reject(new Error('Location service timed out')),
     }));
   }
-  function readDeliveryOrigin() {
+  let deliveryListingCache = { key:'', value:null };
+  let deliveryLegacyCache = { key:'', at:0, value:null };
+  function cleanDeliveryLocation(value = '') {
+    return String(value).replace(/\s+/g, ' ').trim()
+      .replace(/^(?:Pickup\s*\/\s*)?Vehicle Location\s*:?\s*/i, '')
+      .replace(/^(?:Pickup|Located at)\s*:?\s*/i, '')
+      .replace(/\s*\/\s*(?:At Auction|Onsite|Offsite|Off-site|Find at Auction).*$/i, '').trim();
+  }
+  function readDeliveryListing(vin = '') {
+    const expectedVin = vin || location.href.match(/\/details\/([A-HJ-NPR-Z0-9]{17})(?:\/|$)/i)?.[1] || '';
+    const visible = document.querySelector('[data-testid="vehicle-location-value"], .vehicle-seller-info__location-value, .find-at-auction__pickup-location');
+    const label = cleanDeliveryLocation(visible?.textContent || '');
+    const key = `${location.href}|${expectedVin}|${label}`;
+    if (deliveryListingCache.key === key && deliveryListingCache.value) return deliveryListingCache.value;
+    const node = document.querySelector('[data-test-id="stockwave-info"]');
+    // One bounded, listing-specific JSON block. Never scan the body, gallery,
+    // all scripts or React internals. Cache only the few fields we need.
+    if (!node || (node.textContent || '').length > 500000) return { label };
+    try {
+      const data = JSON.parse(node.textContent || '{}');
+      if (!expectedVin || String(data.vin || '').toUpperCase() !== expectedVin.toUpperCase()) return { stale:true };
+      const zip = String(data.pickupLocationZipcode || data.locationFullZipcode || data.locationZipcode || '').match(/^\d{5}/)?.[0] || '';
+      const pickupLabel = cleanDeliveryLocation(data.pickupLocation || data.pickupLocationDescription || label);
+      const address = [data.pickupLocationAddress1, data.pickupLocationCity, data.pickupLocationState, zip].filter(Boolean).join(', ');
+      const coords = String(data.latitudeLongitude || '').split(',').map(Number);
+      const sameState = !data.locationState || !data.pickupLocationState || data.locationState === data.pickupLocationState;
+      const locationZip = String(data.locationZipcode || '').slice(0, 5);
+      const sameZip = !locationZip || !zip || locationZip === zip;
+      const validCoords = coords.length === 2 && coords.every(Number.isFinite) && coords[0] >= 18 && coords[0] <= 72 && coords[1] >= -180 && coords[1] <= -60;
+      const value = {
+        label:pickupLabel || label, zip, address,
+        ...(sameState && sameZip && validCoords ? { lat:coords[0], lon:coords[1] } : {}),
+        isRunning: typeof data.isDrivable === 'boolean' ? data.isDrivable :
+          typeof data.conditionEnrichment?.drivable === 'boolean' ? data.conditionEnrichment.drivable : null,
+      };
+      if (value.label || value.zip) deliveryListingCache = { key, value };
+      return value;
+    } catch (_) { return { label }; }
+  }
+  function readDeliveryOrigin(vin = '') {
+    if (AUCTION_SITE === 'OVE' || AUCTION_SITE === 'MANHEIM') {
+      const listing = readDeliveryListing(vin);
+      if (listing.stale) return null; // SPA still shows the previous vehicle.
+      if (listing.label || listing.zip) return listing;
+    }
+    // Keep legacy/Copart support, but execute its wider fallback at most once
+    // per five seconds while a location is missing, never on every render.
+    const key = `${location.href}|${vin}`;
+    if (deliveryLegacyCache.key === key && Date.now() - deliveryLegacyCache.at < 5000) return deliveryLegacyCache.value;
+    const value = readLegacyDeliveryOrigin();
+    deliveryLegacyCache = { key, at:Date.now(), value };
+    return value;
+  }
+  function readLegacyDeliveryOrigin() {
     // Avoid serializing the complete auction page. Manheim/Copart galleries
     // can be hundreds of megabytes after several vehicles are opened.
     const context = compactPageContext();
@@ -4858,24 +4934,6 @@
     const mapLink = [...document.querySelectorAll('a[href*="google.com/maps"],a[href*="maps.google"],a[href*="maps.apple"]')]
       .find((link) => /direction|map|location|pickup|auction/i.test(`${link.textContent || ''} ${link.href}`));
     if (!labeledZip && mapLink) labeledZip = `${mapLink.textContent || ''} ${mapLink.href}`.match(/\b(\d{5})(?:-\d{4})?\b/)?.[1] || '';
-    // OVE's detail page renders the useful address as a compact pair such as
-    // "Vehicle Location  At Auction, TX - America's Auto Auction San Antonio".
-    // It is not always placed on a separate text line, so read this small,
-    // explicit label before applying the generic location parser below.
-    const oveVehicleLocation = AUCTION_SITE === 'OVE'
-      ? ([
-          // Current OVE VDP: the address is a dedicated value span directly
-          // beside the "Vehicle Location" label. Read it first instead of
-          // depending on a broader page snapshot that can mount late.
-          document.querySelector('.vehicle-seller-info__location-value')?.textContent,
-          document.querySelector('[class*="vehicle-seller-info"] [class*="location-value"]')?.textContent,
-          locationContext.match(/Vehicle\s+Location\s*:?\s*((?:At\s+Auction,\s*)?[A-Z]{2}\s*[-–—]\s*[^\n]{3,120})/i)?.[1]
-        ].find((value) => /(?:At\s+Auction,\s*)?[A-Z]{2}\s*[-–—]\s*/i.test(value || '')) || '')
-          .replace(/\s+/g, ' ').trim().slice(0, 140)
-      : '';
-    const oveAuctionHouse = AUCTION_SITE === 'OVE'
-      ? locationContext.match(/Auction\s+House\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim()
-      : '';
     const pickup = locationContext.match(/(?:^|\n)\s*(?:Pickup|Vehicle Location|Located at)\s*:?\s*([^\n]{3,100})/im)?.[1]?.trim();
     const auctionLocation = locationContext.match(/(?:Auction Location|Branch|Yard|Facility|Sale Location|Facilitating Location)\s*:?\s*([^\n]{3,140})/i)?.[1]?.trim();
     const embeddedLocation = html.match(/["'](?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)["']\s*:\s*["']([^"'{}]{3,100})["']/i)?.[1]?.trim() ||
@@ -4883,7 +4941,7 @@
       html.match(/(?:vehicleLocation|auctionLocation|saleLocation|pickupLocation|locationName|facilityName|branchName|auctionName)(?:%22|\\?")?\s*(?::|%3A)\s*(?:%22|\\?")([^"'&{}]{3,100})/i)?.[1]?.trim();
     const copartLocation = AUCTION_SITE === 'COPART'
       ? text.match(/(?:Location|Sale Location)\s*:?\s*([^\n]{3,100})/i)?.[1]?.trim() : '';
-    let label = oveVehicleLocation || oveAuctionHouse || pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
+    let label = pickup || auctionLocation || embeddedLocation || copartLocation || mapLink?.textContent?.trim() || '';
     if (!label) {
       try {
         const pageUrl = new URL(location.href);
@@ -4922,7 +4980,8 @@
     return MANHEIM_FACILITY_POINTS[key] || null;
   }
   async function geocodeDeliveryOrigin(origin) {
-    const cacheKey = `auctionAssistantGeocode:${origin.zip || origin.label}`;
+    if (Number.isFinite(origin.lat) && Number.isFinite(origin.lon)) return { ...origin };
+    const cacheKey = `auctionAssistantGeocode:${DELIVERY_RATE_VERSION}:${origin.zip || origin.label}`;
     const cached = GM_getValue(cacheKey, null);
     if (cached?.lat && cached?.lon) return cached;
     let point;
@@ -4943,9 +5002,7 @@
       }
     }
     if (!point && origin.label) {
-      const query = origin.label.replace(/\b(?:Manheim|OVE)\b/ig, ' ')
-        // OVE commonly says "At Auction, TX - Auction name".  Nominatim is
-        // much more reliable with the city/auction name followed by the state.
+      const query = origin.address || cleanDeliveryLocation(origin.label)
         .replace(/^At\s+Auction,\s*([A-Z]{2})\s*[-–—]\s*(.+)$/i, '$2, $1')
         .replace(/^([A-Z]{2})\s*[-–—]\s*(.+)$/i, '$2, $1').replace(/\s+/g, ' ').trim();
       try {
@@ -4967,13 +5024,26 @@
     const value = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
     return 3958.8 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
   }
+  const deliveryRouteLookups = new Map();
   async function deliveryRoadMiles(originPoint) {
-    try {
-      const route = await jsonRequest(`https://router.project-osrm.org/route/v1/driving/${originPoint.lon},${originPoint.lat};${DELIVERY_DESTINATION.lon},${DELIVERY_DESTINATION.lat}?overview=false`);
-      const meters = Number(route?.routes?.[0]?.distance || 0);
-      if (meters > 0) return { miles:meters / 1609.344, source:'road route' };
-    } catch (_) {}
-    return { miles:straightLineMiles(originPoint, DELIVERY_DESTINATION) * 1.18, source:'estimated route' };
+    const key = `auctionAssistantRoute:${DELIVERY_RATE_VERSION}:${originPoint.lat},${originPoint.lon}:${DELIVERY_DESTINATION.zip}`;
+    const cached = GM_getValue(key, null);
+    const cacheTtl = cached?.source === 'estimated route' ? DELIVERY_FAILURE_RETRY_MS : 7 * 24 * 60 * 60 * 1000;
+    if (cached?.miles > 0 && Date.now() - cached.at < cacheTtl) return cached;
+    if (deliveryRouteLookups.has(key)) return deliveryRouteLookups.get(key);
+    const task = (async () => {
+      let value;
+      try {
+        const route = await withDeliveryDeadline(jsonRequest(`https://router.project-osrm.org/route/v1/driving/${originPoint.lon},${originPoint.lat};${DELIVERY_DESTINATION.lon},${DELIVERY_DESTINATION.lat}?overview=false`), 9000);
+        const meters = Number(route?.routes?.[0]?.distance || 0);
+        if (meters > 0) value = { miles:meters / 1609.344, source:'road route' };
+      } catch (_) {}
+      if (!value) value = { miles:straightLineMiles(originPoint, DELIVERY_DESTINATION) * 1.18, source:'estimated route' };
+      GM_setValue(key, { ...value, at:Date.now() });
+      return value;
+    })().finally(() => deliveryRouteLookups.delete(key));
+    deliveryRouteLookups.set(key, task);
+    return task;
   }
   function deliveryVehicleType(vehicle) {
     const title = String(vehicle.title || '').toLowerCase();
@@ -4983,10 +5053,14 @@
     return 'sedan';
   }
   function deliveryRunningStatus() {
-    const text = compactPageContext().text;
-    if (/\b(?:non[- ]?run(?:ner|ning)?|inoperable|inop|stationary|does not (?:run|start)|won't (?:run|start)|no start)\b/i.test(text))
-      return false;
-    return true;
+    let text;
+    if (AUCTION_SITE === 'OVE' || AUCTION_SITE === 'MANHEIM') {
+      const listing = readDeliveryListing();
+      if (typeof listing.isRunning === 'boolean') return listing.isRunning;
+      const announcements = document.querySelector('#announcement-section-id');
+      text = (announcements?.textContent || '').slice(0, 4000);
+    } else text = compactPageContext().text;
+    return !/\b(?:non[- ]?run(?:ner|ning)?|inoperable|inop|stationary|does not (?:run|start)|won't (?:run|start)|no start)\b/i.test(text);
   }
   function baseDeliveryPrice(miles) {
     if (miles <= 50) return 150;
@@ -5074,13 +5148,14 @@
   }
   async function ensureAutoDelivery(vehicle) {
     if (!vehicle?.vin || deliveryLookups.has(vehicle.vin)) return deliveryLookups.get(vehicle.vin);
+    let origin = null;
     const task = (async () => {
-      const origin = readDeliveryOrigin();
+      origin = readDeliveryOrigin(vehicle.vin);
       if (!origin) throw new Error(`${AUCTION_SITE} did not provide an auction location — enter delivery manually`);
       const signature = deliveryOriginSignature(origin);
       const current = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
       if (current?.signature === signature && current.price) return current;
-      const point = await withDeliveryDeadline(geocodeDeliveryOrigin(origin), 9000);
+      const point = await withDeliveryDeadline(geocodeDeliveryOrigin(origin), 20000);
       const route = await withDeliveryDeadline(deliveryRoadMiles(point), 9000);
       const type = deliveryVehicleType(vehicle);
       const isRunning = deliveryRunningStatus();
@@ -5095,7 +5170,7 @@
     })().catch((error) => {
       GM_setValue(deliveryEstimateKey(vehicle.vin), {
         error:error.message || 'Location unavailable',
-        signature:deliveryOriginSignature(readDeliveryOrigin()),
+        signature:deliveryOriginSignature(origin),
         calculatedAt:Date.now(),
       });
       return null;
@@ -5167,8 +5242,8 @@
         <div class="deal-inputs">
           <div class="deal-field"><label>Minimum profit</label><div class="input-wrap"><span>$</span><input data-deal="targetProfit" inputmode="numeric" value="${config.targetProfit || ''}"></div></div>
           <div class="deal-field"><label>Auction fee · ${config.feeManual ? 'Manual' : `Est. ${AUCTION_SITE}${isManheimSimulcast() ? ' Simulcast' : ''}`}</label><div class="input-wrap"><span>$</span><input data-deal="fee" inputmode="numeric" value="${deal ? Math.round(deal.fee) : (config.feeManual ? config.fee : '')}" placeholder="Auto"></div></div>
-          <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual <button type="button" class="delivery-auto-button" id="ove-delivery-auto">Auto</button>' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="Detecting…"></div>
-            <div class="delivery-note">${deliveryEstimate?.price ? `${deliveryEstimate.origin}${deliveryEstimate.originZip ? ` ${deliveryEstimate.originZip}` : ''} · ~${number(deliveryEstimate.miles)} mi · ${deliveryEstimate.vehicleType}${deliveryEstimate.isRunning ? '' : ' · non-running'}` : (deliveryEstimate?.error || 'Detecting auction location and route…')}</div></div>
+          <div class="deal-field"><label>Delivery to 90045${config.deliveryManual ? ' · Manual <button type="button" class="delivery-auto-button" id="ove-delivery-auto">Auto</button>' : ' · Auto'}</label><div class="input-wrap"><span>$</span><input data-deal="delivery" inputmode="numeric" value="${config.delivery || ''}" placeholder="${config.deliveryManual || deliveryEstimate?.error ? 'Enter delivery' : 'Calculating…'}"></div>
+            <div class="delivery-note">${deliveryEstimate?.price ? `${deliveryEstimate.origin}${deliveryEstimate.originZip ? ` ${deliveryEstimate.originZip}` : ''} · ~${number(deliveryEstimate.miles)} mi · ${deliveryEstimate.vehicleType}${deliveryEstimate.isRunning ? '' : ' · non-running'}${deliveryEstimate.routeSource === 'estimated route' ? ' · approx. route' : ''}` : (deliveryEstimate?.error || 'Detecting auction location and route…')}</div></div>
           <div class="deal-field"><label>Additional costs</label><div class="input-wrap"><span>$</span><input data-deal="extra" inputmode="numeric" value="${config.extra || ''}" placeholder="0"></div></div>
         </div>
         <div class="deal-recommended"><div><div class="label">Recommended max buy</div><div style="font-size:10px;opacity:.8">Includes profit, fee and costs</div></div><div class="value">${money(deal?.recommendedBuy)}</div></div>
@@ -5381,27 +5456,27 @@
     bindCarfaxCaptchaButton();
     bindCarfaxValueButton(vehicle, config.zip);
     bindDealInputs(vehicle.vin);
+    queueAutoDelivery(vehicle);
+  }
+  function queueAutoDelivery(vehicle) {
     const cachedDelivery = GM_getValue(deliveryEstimateKey(vehicle.vin), null);
-    const deliveryFailureAge = cachedDelivery?.error
-      ? Date.now() - Number(cachedDelivery.calculatedAt || 0)
-      : Infinity;
-    // Retry immediately only when Manheim has supplied *new* location data.
-    // Older logic retried every render as soon as any label appeared, which
-    // could leave the panel at "Detecting…" and keep the tab needlessly busy.
-    const currentOrigin = cachedDelivery?.error ? readDeliveryOrigin() : null;
-    const locationMountedAfterInitialRead = Boolean(cachedDelivery?.error && currentOrigin &&
-      (!cachedDelivery.signature || cachedDelivery.signature !== deliveryOriginSignature(currentOrigin)));
-    const shouldAutoEstimateDelivery = !cachedDelivery?.price &&
-      (!cachedDelivery?.error || locationMountedAfterInitialRead ||
-        deliveryFailureAge >= DELIVERY_FAILURE_RETRY_MS);
-    if (shouldAutoEstimateDelivery) {
-      ensureAutoDelivery(vehicle).then((estimate) => {
-        if (readVehicle().vin === vehicle.vin) {
-          render(estimate ? 'Delivery estimated automatically.' : 'Auction location is unavailable; delivery can be entered manually.');
-        }
-      });
+    const manualDelivery = readDealSettings(vehicle.vin).deliveryManual;
+    if (!manualDelivery && !deliveryLookups.has(vehicle.vin)) {
+      const origin = readDeliveryOrigin(vehicle.vin);
+      const signature = deliveryOriginSignature(origin);
+      const sameOrigin = cachedDelivery?.signature === signature;
+      const failureAge = Date.now() - Number(cachedDelivery?.calculatedAt || 0);
+      if (!(cachedDelivery?.price && sameOrigin) &&
+          !(cachedDelivery?.error && sameOrigin && failureAge < DELIVERY_FAILURE_RETRY_MS)) {
+        ensureAutoDelivery(vehicle).then((estimate) => {
+          if (readVehicle().vin === vehicle.vin) {
+            render(estimate ? 'Delivery estimated automatically.' : 'Delivery unavailable — enter the amount manually.');
+          }
+        });
+      }
     }
   }
+
   function carfaxRequest(method, url, data) {
     return new Promise((resolve, reject) => GM_xmlhttpRequest({
       method, url, timeout: 30000, anonymous: false, withCredentials: true,
@@ -5728,30 +5803,6 @@
     }
   }
   makePanel(); render();
-  // OVE can return from its Manheim sign-in flow by restoring the same SPA
-  // document. In that case a previous page lifecycle can remove our fixed
-  // sidebar after this userscript has already started. Re-create it only on
-  // the return/initial settling events; do not add a permanent page observer.
-  let assistantUiRecoveryTimer = null;
-  function ensureAssistantUiIsMounted() {
-    if (!document.body || document.getElementById('ove-kbb-panel')) return;
-    try {
-      makePanel();
-      render();
-    } catch (_) {
-      // The next bounded check below handles a document that is still mounting.
-    }
-  }
-  function scheduleAssistantUiRecovery(delay = 0) {
-    clearTimeout(assistantUiRecoveryTimer);
-    assistantUiRecoveryTimer = setTimeout(ensureAssistantUiIsMounted, delay);
-  }
-  window.addEventListener('pageshow', () => scheduleAssistantUiRecovery(250));
-  window.addEventListener('focus', () => scheduleAssistantUiRecovery(250));
-  // OVE mounts the post-login shell asynchronously. Two short checks cover
-  // that transition without polling the auction page afterward.
-  scheduleAssistantUiRecovery(1000);
-  setTimeout(() => scheduleAssistantUiRecovery(0), 3500);
   GM_addValueChangeListener(CARFAX_JOB_KEY, () => {
     const current = GM_getValue(CARFAX_JOB_KEY, null);
     render();
@@ -5827,13 +5878,20 @@
       auctionTextCache = { url:'', at:0, text:'' };
       refreshIfVehicleChanged(false);
     }
-    // OVE commonly mounts its auction-location block after VIN/title are
-    // already stable. Run only a few bounded refreshes so a late location can
-    // start delivery calculation without a permanent observer or polling.
-    if (helperIsDetailPage() && AUCTION_SITE === 'OVE' && deliveryMountAttempts < 4) {
+    // Both auction sites can mount pickup data after VIN/title are stable.
+    // At most 12 small checks; render only when the origin actually changes.
+    // A successful calculation or manual delivery stops these checks early.
+    if (helperIsDetailPage() && ['OVE', 'MANHEIM'].includes(AUCTION_SITE) && deliveryMountAttempts < 12) {
       deliveryMountAttempts += 1;
-      compactContextCache = { url:'', at:0, value:null };
-      render();
+      const vehicle = readVehicle();
+      const cached = vehicle.vin ? GM_getValue(deliveryEstimateKey(vehicle.vin), null) : null;
+      if (vehicle.vin && readDealSettings(vehicle.vin).deliveryManual) {
+        deliveryMountAttempts = 12;
+      } else if (vehicle.vin && !deliveryLookups.has(vehicle.vin)) {
+        const signature = deliveryOriginSignature(readDeliveryOrigin(vehicle.vin));
+        if (cached?.price && cached.signature === signature) deliveryMountAttempts = 12;
+        else if (!cached || cached.signature !== signature) render();
+      }
     }
   }, 1500);
   window.addEventListener('pagehide', () => {

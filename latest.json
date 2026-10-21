@@ -1,6 +1,6 @@
 {
-  "version": "2.7.25",
+  "version": "2.7.44",
   "scriptUrl": "https://raw.githubusercontent.com/vladrusakov08-code/auction-assistant-updates/main/ove-auction-assistant.user.js",
-  "releasedAt": "2026-08-08T15:10:00-07:00",
-  "notes": "Add Ivan profile in pink, shared team colours, and correct Who added column in all auction sheets"
+  "releasedAt": "2026-10-20T17:18:28-07:00",
+  "notes": "Add Artem cyan profile and shared colors; fix OVE and Manheim delivery detection with bounded retries and cached routing."
 }
